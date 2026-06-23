@@ -1,0 +1,6 @@
+*.md
+*.skill
+*.log
+data/
+.claude/
+__pycache__/
