@@ -27,7 +27,10 @@ PAGE = """<!doctype html>
            border-radius: 4px; margin-left: 0.4rem; }
   .badge.b2b { background: #2a9d4a; color: #fff; }
   .badge.flag { background: #b03030; color: #fff; }
+  .badge.new { background: #e0b400; color: #111; font-weight: bold; }
   .score { font-weight: bold; color: #7fb0ff; }
+  .source { color: #999; font-size: 0.75rem; text-transform: uppercase; }
+  .stored { color: #888; font-size: 0.8rem; white-space: nowrap; }
   .skills { color: #999; font-size: 0.85rem; }
   .meta { color: #888; font-size: 0.75rem; margin-top: 0.3rem; }
   .clicks { color: #888; font-size: 0.75rem; margin-left: 0.4rem; }
@@ -47,7 +50,7 @@ PAGE = """<!doctype html>
 <div class="tabs" id="tabs"></div>
 <table>
   <thead>
-    <tr><th>Score</th><th>Offer</th><th>Company</th><th>Where</th><th>Skills</th><th>Notes</th><th>Status</th></tr>
+    <tr><th>Score</th><th>Offer</th><th>Source</th><th>Company</th><th>Where</th><th>Skills</th><th>Stored</th><th>Notes</th><th>Status</th></tr>
   </thead>
   <tbody id="rows"></tbody>
 </table>
@@ -57,13 +60,39 @@ let currentFilter = 'all';
 const FILTERS = ['all', 'new', 'interesting', 'cv_sent', 'not_for_me'];
 const LABELS = {all: 'All', new: 'New', interesting: 'Interesting', cv_sent: 'CV sent', not_for_me: 'Not for me'};
 
+// URLs already shown to the user in a previous visit/poll -- anything not
+// in this set when rendered gets a "NEW" badge. The set itself is frozen
+// for the lifetime of this page load so the badge doesn't flicker away on
+// the next poll; it's only refreshed (in localStorage) for the *next* visit.
+const seenUrls = new Set(JSON.parse(localStorage.getItem('seenOfferUrls') || '[]'));
+
 function escapeHtml(s) {
   return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function formatStored(iso) {
+  if (!iso) return '-';
+  return iso.replace('T', ' ').slice(0, 16);
 }
 
 async function load() {
   const res = await fetch('/api/matches');
   allMatches = await res.json();
+  localStorage.setItem('seenOfferUrls', JSON.stringify(
+    [...new Set([...seenUrls, ...Object.keys(allMatches)])]
+  ));
+  render();
+}
+
+async function poll() {
+  const res = await fetch('/api/matches');
+  allMatches = await res.json();
+  localStorage.setItem('seenOfferUrls', JSON.stringify(
+    [...new Set([...seenUrls, ...Object.keys(allMatches)])]
+  ));
+  if (document.activeElement && document.activeElement.matches('.notes-input')) {
+    return; // don't blow away an in-progress note edit
+  }
   render();
 }
 
@@ -87,11 +116,13 @@ function render() {
     <tr class="row status-${m.status}">
       <td class="score">${m.score ?? '-'}</td>
       <td>
-        <a class="offer-link" href="${url}" target="_blank" rel="noopener">${escapeHtml(m.title)}</a>${m.click_count ? `<span class="clicks">opened ${m.click_count}×</span>` : ''}${m.target_employer ? '<span class="badge">target</span>' : ''}${m.b2b ? '<span class="badge b2b">B2B</span>' : ''}${(m.flags || []).map(f => `<span class="badge flag">${escapeHtml(f)}</span>`).join('')}${m.also_in ? `<span class="badge">+${m.also_in.length} more</span>` : ''}
+        ${!seenUrls.has(url) ? '<span class="badge new">NEW</span>' : ''}<a class="offer-link" href="${url}" target="_blank" rel="noopener">${escapeHtml(m.title)}</a>${m.click_count ? `<span class="clicks">opened ${m.click_count}×</span>` : ''}${m.target_employer ? '<span class="badge">target</span>' : ''}${m.b2b ? '<span class="badge b2b">B2B</span>' : ''}${(m.flags || []).map(f => `<span class="badge flag">${escapeHtml(f)}</span>`).join('')}${m.also_in ? `<span class="badge">+${m.also_in.length} more</span>` : ''}
       </td>
+      <td class="source">${escapeHtml(m.source || '')}</td>
       <td>${escapeHtml(m.company)}</td>
       <td>${escapeHtml(m.where)}</td>
       <td class="skills">${(m.skills || []).join(', ')}</td>
+      <td class="stored">${formatStored(m.first_seen)}</td>
       <td><input class="notes-input" data-url="${encodeURIComponent(url)}" value="${escapeHtml(m.notes || '')}" placeholder="Add a note..."></td>
       <td class="actions">
         ${['interesting', 'cv_sent', 'not_for_me'].map(s =>
@@ -154,6 +185,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 load();
+setInterval(poll, 20000);
 </script>
 </body>
 </html>

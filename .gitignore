@@ -4,3 +4,8 @@
 data/
 .claude/
 __pycache__/
+*.egg-info/
+.venv/
+venv/
+build/
+dist/

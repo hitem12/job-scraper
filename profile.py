@@ -57,12 +57,16 @@ PROFILE = {
         "city_keywords": ["warszawa", "warsaw"],
         "remote_ok": True,
     },
-    # Broad net used only to shrink the ~10k active offers down to a
-    # candidate set worth fetching in full. Final relevance is decided by
-    # the scoring above, so false positives here are fine.
+    # Broad net used only to shrink justjoin.it/theprotocol.it's full active-offer
+    # sitemaps (~10k and ~6k URLs respectively) down to a candidate set worth
+    # fetching in full. Final relevance is decided by the scoring above, so
+    # false positives here are fine.
     "slug_prefilter_keywords": [
         "embedded", "kernel", "firmware", "yocto", "dpdk", "ebpf", "xdp",
         "rtos", "automotive", "industrial", "fpga", "vhdl", "verilog",
         "plc", "scada", "linux",
     ],
+    # nofluffjobs.com has its own topic taxonomy instead of free-text slugs,
+    # so candidate discovery there browses these categories directly.
+    "nofluffjobs_categories": ["embedded", "telecommunication", "electronics"],
 }

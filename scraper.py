@@ -4,18 +4,15 @@ import re
 import sys
 import time
 import webbrowser
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
 import requests
 
 from profile import PROFILE
+from sources import justjoin, nofluffjobs, theprotocol
 
-SITEMAP_INDEX_URL = "https://justjoin.it/sitemaps/active-jobs.xml"
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; personal-job-match-script/1.0)"}
 REQUEST_DELAY_SECONDS = 0.3
-REQUEST_TIMEOUT = 15
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_PATH = BASE_DIR / "data" / "seen_urls.json"
@@ -31,50 +28,11 @@ STATUS_LABELS = {
     "not_for_me": "Not for me",
 }
 
-LD_JSON_RE = re.compile(
-    r'<script type="application/ld\+json"[^>]*>(.*?)</script>', re.S
-)
 LOG_LINE_RE = re.compile(
-    r"^\[(?P<ts>[^\]]+)\] \(score (?P<score>-?\d+)\) (?P<title>.+?) @ (?P<company>.+?)"
-    r"(?: \[TARGET EMPLOYER\])? \((?P<where>[^)]+)\) skills: (?P<skills>.+?) -> (?P<url>\S+)$"
+    r"^\[(?P<ts>[^\]]+)\] \(score (?P<score>-?\d+)\) \[(?P<source>[^\]]+)\] "
+    r"(?P<title>.+?) @ (?P<company>.+?)(?: \[TARGET EMPLOYER\])? "
+    r"\((?P<where>[^)]+)\) skills: (?P<skills>.+?) -> (?P<url>\S+)$"
 )
-
-
-def get_locs(xml_bytes):
-    root = ET.fromstring(xml_bytes)
-    return [el.text.strip() for el in root.iter() if el.tag.endswith("loc") and el.text]
-
-
-def fetch(url):
-    resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    return resp.content
-
-
-def list_active_job_urls():
-    index_xml = fetch(SITEMAP_INDEX_URL)
-    part_urls = get_locs(index_xml)
-    job_urls = []
-    for part_url in part_urls:
-        job_urls.extend(get_locs(fetch(part_url)))
-    return job_urls
-
-
-def slug_of(url):
-    return url.rsplit("/", 1)[-1].lower()
-
-
-def is_candidate(url):
-    slug = slug_of(url)
-    if slug.endswith("-c"):
-        return True
-    for kw in PROFILE["slug_prefilter_keywords"]:
-        if kw in slug:
-            return True
-    for employer in PROFILE["target_employers"]:
-        if re.search(rf"(^|-){employer}(-|$)", slug):
-            return True
-    return False
 
 
 def text_contains(keyword, text):
@@ -87,44 +45,52 @@ def find_weighted_hits(text, weights):
     return {kw: weight for kw, weight in weights.items() if text_contains(kw, text)}
 
 
-def parse_job_page(html):
-    match = LD_JSON_RE.search(html)
-    if not match:
-        return None
-    try:
-        return json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return None
-
-
 def normalize_title(title):
     return re.sub(r"\s+", " ", title.strip().lower())
 
 
-def evaluate_offer(data, url):
-    title = data.get("title", "")
-    description = data.get("description", "")
+def discover_candidates():
+    candidates = {}
+
+    print("Discovering candidates on justjoin.it...", file=sys.stderr)
+    for url in justjoin.list_candidate_urls(
+        PROFILE["slug_prefilter_keywords"], PROFILE["target_employers"]
+    ):
+        candidates[url] = (justjoin, None)
+
+    print("Discovering candidates on theprotocol.it...", file=sys.stderr)
+    for url in theprotocol.list_candidate_urls(
+        PROFILE["slug_prefilter_keywords"], PROFILE["target_employers"]
+    ):
+        candidates.setdefault(url, (theprotocol, None))
+
+    print("Discovering candidates on nofluffjobs.com...", file=sys.stderr)
+    for url, hint in nofluffjobs.list_candidate_urls(PROFILE["nofluffjobs_categories"]).items():
+        candidates.setdefault(url, (nofluffjobs, hint))
+
+    return candidates
+
+
+def evaluate_offer(normalized, url):
+    title = normalized["title"]
+    description = normalized["description"]
     text = f"{title}\n{description}".lower()
 
     positive_hits = find_weighted_hits(text, PROFILE["skill_weights"])
     negative_hits = find_weighted_hits(text, PROFILE["negative_weights"])
     score = sum(positive_hits.values()) + sum(negative_hits.values())
 
-    company = (data.get("hiringOrganization") or {}).get("name", "")
+    company = normalized["company"]
     is_target_employer = company.lower() in PROFILE["target_employers"]
     if is_target_employer:
         score += PROFILE["target_employer_bonus"]
 
-    location_type = data.get("jobLocationType", "")
-    address = ((data.get("jobLocation") or {}).get("address") or {})
-    locality = address.get("addressLocality", "")
-
-    is_remote = PROFILE["location"]["remote_ok"] and location_type == "TELECOMMUTE"
-    is_target_city = locality.lower() in PROFILE["location"]["city_keywords"]
+    localities = normalized["localities"]
+    is_remote = PROFILE["location"]["remote_ok"] and normalized["is_remote"]
+    is_target_city = any(loc.lower() in PROFILE["location"]["city_keywords"] for loc in localities)
     location_match = is_remote or is_target_city
 
-    base_salary = data.get("baseSalary") or {}
-    is_b2b = text_contains("b2b", text) or base_salary.get("unitText") == "HOUR"
+    is_b2b = normalized["is_b2b"] or text_contains("b2b", text)
     if is_b2b:
         score += PROFILE["b2b_bonus"]
 
@@ -132,9 +98,10 @@ def evaluate_offer(data, url):
 
     return {
         "url": url,
+        "source": normalized["source"],
         "title": title,
         "company": company,
-        "locality": locality or location_type,
+        "localities": localities,
         "remote": is_remote,
         "b2b": is_b2b,
         "score": score,
@@ -164,9 +131,9 @@ def append_matches_log(matches):
     for m in sorted(matches, key=lambda m: m["score"], reverse=True):
         skills = ", ".join(m["positive_hits"].keys()) or "-"
         tag = " [TARGET EMPLOYER]" if m["is_target_employer"] else ""
-        where = "remote" if m["remote"] else m["locality"]
+        where = "remote" if m["remote"] else (", ".join(m["localities"]) or "unknown")
         lines.append(
-            f"[{timestamp}] (score {m['score']}) {m['title']} @ {m['company']}{tag} "
+            f"[{timestamp}] (score {m['score']}) [{m['source']}] {m['title']} @ {m['company']}{tag} "
             f"({where}) skills: {skills} -> {m['url']}"
         )
     with LOG_PATH.open("a") as f:
@@ -189,6 +156,7 @@ def load_matches_store():
             store[m.group("url")] = {
                 "title": m.group("title"),
                 "company": m.group("company"),
+                "source": m.group("source"),
                 "where": where,
                 "remote": where == "remote",
                 "b2b": False,
@@ -259,7 +227,8 @@ def update_matches_store(new_matches):
         store[m["url"]] = {
             "title": m["title"],
             "company": m["company"],
-            "where": "remote" if m["remote"] else m["locality"],
+            "source": m["source"],
+            "where": "remote" if m["remote"] else (", ".join(m["localities"]) or "unknown"),
             "remote": m["remote"],
             "b2b": m["b2b"],
             "score": m["score"],
@@ -285,7 +254,7 @@ def export_markdown(store, path=MD_PATH):
         "# Job Matches Export",
         "",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "Source: justjoin.it, matched against the profile in profile.py",
+        "Sources: justjoin.it, nofluffjobs.com, theprotocol.it -- matched against the profile in profile.py",
         f"Total: {len(store)} offers",
         "",
     ]
@@ -303,6 +272,7 @@ def export_markdown(store, path=MD_PATH):
             continue
         for url, m in entries:
             lines.append(f"### {m['title']} — {m['company']} (score: {m.get('score', 0)})")
+            lines.append(f"- Source: {m.get('source', 'unknown')}")
             where = m["where"]
             if m.get("also_in"):
                 where += f" (+{len(m['also_in'])} other location(s): {', '.join(m['also_in'])})"
@@ -341,12 +311,10 @@ def main():
     args = parse_args()
     state = load_state()
 
-    print("Fetching active job sitemap...", file=sys.stderr)
-    all_urls = list_active_job_urls()
-    candidates = [u for u in all_urls if is_candidate(u)]
+    candidates = discover_candidates()
     to_process = [u for u in candidates if u not in state]
     print(
-        f"{len(all_urls)} active offers, {len(candidates)} candidates, "
+        f"{len(candidates)} total candidates across all sources, "
         f"{len(to_process)} new to check.",
         file=sys.stderr,
     )
@@ -360,17 +328,17 @@ def main():
             file=sys.stderr,
             flush=True,
         )
+        module, hint = candidates[url]
         try:
-            html = fetch(url).decode("utf-8", errors="ignore")
-            data = parse_job_page(html)
-            if data is None:
+            normalized = module.fetch_offer(url, hint)
+            if normalized is None:
                 state[url] = {
                     "checked_at": datetime.now().isoformat(timespec="seconds"),
                     "matched": False,
-                    "no_ld_json": True,
+                    "no_data": True,
                 }
                 continue
-            result = evaluate_offer(data, url)
+            result = evaluate_offer(normalized, url)
             state[url] = {
                 "checked_at": datetime.now().isoformat(timespec="seconds"),
                 "matched": result["is_match"],
@@ -378,7 +346,8 @@ def main():
             if result["is_match"]:
                 new_matches.append(result)
                 print(
-                    f"\n  match (score {result['score']}): {result['title']} @ {result['company']}",
+                    f"\n  match (score {result['score']}, {result['source']}): "
+                    f"{result['title']} @ {result['company']}",
                     file=sys.stderr,
                 )
         except requests.RequestException as exc:
@@ -394,7 +363,7 @@ def main():
     new_matches.sort(key=lambda m: m["score"], reverse=True)
     print(f"Found {len(new_matches)} new matching offer(s).", file=sys.stderr)
     for m in new_matches:
-        print(f"  - (score {m['score']}) {m['title']} @ {m['company']} -> {m['url']}")
+        print(f"  - (score {m['score']}, {m['source']}) {m['title']} @ {m['company']} -> {m['url']}")
 
     if args.open_browser:
         for m in new_matches:

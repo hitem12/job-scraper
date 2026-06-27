@@ -1,0 +1,8 @@
+[project]
+name = "job-scraper"
+version = "0.1.0"
+description = "Personal job offer scraper and matcher for justjoin.it, nofluffjobs.com, and theprotocol.it"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+]
