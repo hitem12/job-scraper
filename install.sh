@@ -1,0 +1,482 @@
+#!/bin/sh
+# install.sh — installs job-scraper as a cron-driven service (OpenRC)
+# POSIX sh / busybox ash compatible  •  must be run as root
+#
+# Usage:
+#   sudo ./install.sh             # install
+#   sudo ./install.sh --uninstall # remove
+set -eu
+
+# ══════════════════════════════════════════════════════════════════════
+# CONFIGURATION — edit before the first run
+# ══════════════════════════════════════════════════════════════════════
+APP_NAME="job-scraper"
+APP_USER="jobscraper"          # system user, no login shell
+APP_ENTRY="scraper.py"
+CRON_SCHEDULE="*/15 * * * *"
+
+# Local ntfy — leave NTFY_TOPIC empty to skip ntfy args in cron
+NTFY_SERVER="http://127.0.0.1:2586"
+NTFY_TOPIC=""                  # e.g. "job-alerts"
+
+# Python deps — keep in sync with pyproject.toml [project.dependencies]
+PYTHON_DEPS="requests>=2.31"
+
+# ══════════════════════════════════════════════════════════════════════
+# DERIVED PATHS — do not edit
+# ══════════════════════════════════════════════════════════════════════
+SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_DIR="/opt/${APP_NAME}"
+VENV_DIR="${APP_DIR}/venv"
+LOG_DIR="/var/log/${APP_NAME}"
+CONF_DIR="/etc/${APP_NAME}"
+TOKEN_FILE="${CONF_DIR}/ntfy-token"
+WRAPPER="/usr/local/bin/${APP_NAME}"
+LOCK_FILE="/run/${APP_NAME}.lock"
+
+# ══════════════════════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════════════════════
+die()  { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
+step() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
+ok()   { printf '    \033[0;32m✓\033[0m %s\n' "$*"; }
+
+need_root() { [ "$(id -u)" -eq 0 ] || die "Run as root (or with sudo)."; }
+
+confirm() {
+  printf '%s [y/N] ' "$1"
+  read -r _ans
+  case "${_ans}" in [Yy]*) return 0;; *) return 1;; esac
+}
+
+detect_env() {
+  # Package manager
+  if command -v apk >/dev/null 2>&1; then
+    PKG_MGR="apk"
+  elif command -v pacman >/dev/null 2>&1; then
+    PKG_MGR="pacman"
+  else
+    PKG_MGR="unknown"
+    warn "Unknown package manager — skipping system dependency check."
+  fi
+
+  # nologin shell
+  if [ -x /sbin/nologin ]; then
+    NOLOGIN="/sbin/nologin"
+  elif [ -x /usr/bin/nologin ]; then
+    NOLOGIN="/usr/bin/nologin"
+  else
+    NOLOGIN="/bin/false"
+  fi
+
+  # Cron directory style
+  if [ -d /etc/crontabs ]; then
+    CRON_STYLE="crontabs"        # busybox crond (Alpine)
+    CRON_FILE="/etc/crontabs/${APP_USER}"
+  elif [ -d /etc/cron.d ]; then
+    CRON_STYLE="crond"           # cronie / dcron (Artix)
+    CRON_FILE="/etc/cron.d/${APP_NAME}"
+  else
+    CRON_STYLE="none"
+    CRON_FILE=""
+  fi
+
+  # flock
+  if command -v flock >/dev/null 2>&1; then
+    HAS_FLOCK=1
+  else
+    HAS_FLOCK=0
+    warn "flock not found — parallel cron runs will not be serialised."
+    warn "Install util-linux to get flock."
+  fi
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# INSTALL
+# ══════════════════════════════════════════════════════════════════════
+install() {
+  need_root
+  detect_env
+
+  _token_created=0
+  _no_logrotate=0
+
+  # ── 1. System dependencies ─────────────────────────────────────────
+  step "Checking system dependencies"
+  case "${PKG_MGR}" in
+    apk)
+      NEEDED=""
+      for pkg in python3 py3-pip; do
+        apk info -e "${pkg}" >/dev/null 2>&1 || NEEDED="${NEEDED} ${pkg}"
+      done
+      if [ -n "${NEEDED}" ]; then
+        printf '  Installing:%s\n' "${NEEDED}"
+        # shellcheck disable=SC2086
+        apk add --no-cache ${NEEDED}
+      else
+        ok "python3 and py3-pip already installed."
+      fi
+      ;;
+    pacman)
+      NEEDED=""
+      for pkg in python python-pip; do
+        pacman -Q "${pkg}" >/dev/null 2>&1 || NEEDED="${NEEDED} ${pkg}"
+      done
+      if [ -n "${NEEDED}" ]; then
+        printf '  Installing:%s\n' "${NEEDED}"
+        # shellcheck disable=SC2086
+        pacman -S --noconfirm --needed ${NEEDED}
+      else
+        ok "python and python-pip already installed."
+      fi
+      ;;
+    *)
+      ok "Skipped (unknown package manager)."
+      ;;
+  esac
+
+  # ── 2. System user ─────────────────────────────────────────────────
+  step "Ensuring system user '${APP_USER}'"
+  if id "${APP_USER}" >/dev/null 2>&1; then
+    ok "User '${APP_USER}' already exists."
+  else
+    case "${PKG_MGR}" in
+      apk)
+        adduser -S -D -H -s "${NOLOGIN}" "${APP_USER}"
+        ;;
+      *)
+        useradd -r -M -s "${NOLOGIN}" "${APP_USER}"
+        ;;
+    esac
+    ok "Created system user '${APP_USER}' (no home, no shell)."
+  fi
+
+  # ── 3. Copy application files ──────────────────────────────────────
+  step "Syncing application files → ${APP_DIR}"
+  mkdir -p "${APP_DIR}"
+
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete \
+      --exclude='.git/' \
+      --exclude='__pycache__/' \
+      --exclude='*.pyc' \
+      --exclude='venv/' \
+      --exclude='data/' \
+      --exclude='matches.log' \
+      --exclude='matches.md' \
+      --exclude='install.sh' \
+      "${SRC_DIR}/" "${APP_DIR}/"
+  else
+    cp -rp "${SRC_DIR}/." "${APP_DIR}/"
+    rm -rf "${APP_DIR}/.git" \
+           "${APP_DIR}/venv" \
+           "${APP_DIR}/install.sh" \
+           "${APP_DIR}/matches.log" \
+           "${APP_DIR}/matches.md" 2>/dev/null || true
+    find "${APP_DIR}" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+    find "${APP_DIR}" -name '*.pyc' -delete 2>/dev/null || true
+  fi
+
+  chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}"
+  chmod 750 "${APP_DIR}"
+  ok "Files synced."
+
+  # data/ must be writable — app stores seen_urls.json and matches.json there
+  mkdir -p "${APP_DIR}/data"
+  chown "${APP_USER}:${APP_USER}" "${APP_DIR}/data"
+  chmod 750 "${APP_DIR}/data"
+
+  # ── 4. Log directory ───────────────────────────────────────────────
+  step "Creating log directory → ${LOG_DIR}"
+  mkdir -p "${LOG_DIR}"
+  chown "${APP_USER}:${APP_USER}" "${LOG_DIR}"
+  chmod 750 "${LOG_DIR}"
+  ok "Done."
+
+  # ── 5. Config directory & ntfy token ──────────────────────────────
+  step "Setting up config directory → ${CONF_DIR}"
+  mkdir -p "${CONF_DIR}"
+  # Keep CONF_DIR readable by root only; token is readable by APP_USER only
+  chmod 755 "${CONF_DIR}"
+  if [ -f "${TOKEN_FILE}" ]; then
+    ok "Token file already exists — not overwriting."
+  else
+    : > "${TOKEN_FILE}"
+    chown "${APP_USER}:${APP_USER}" "${TOKEN_FILE}"
+    chmod 600 "${TOKEN_FILE}"
+    _token_created=1
+    ok "Created empty token file: ${TOKEN_FILE}"
+  fi
+
+  # ── 6. Python virtualenv ───────────────────────────────────────────
+  step "Setting up Python virtualenv → ${VENV_DIR}"
+  if [ ! -d "${VENV_DIR}" ]; then
+    python3 -m venv "${VENV_DIR}"
+    chown -R "${APP_USER}:${APP_USER}" "${VENV_DIR}"
+    ok "Virtualenv created."
+  else
+    ok "Virtualenv already exists."
+  fi
+
+  step "Installing Python dependencies: ${PYTHON_DEPS}"
+  su -s /bin/sh "${APP_USER}" -c \
+    "${VENV_DIR}/bin/pip install --quiet --upgrade pip && \
+     ${VENV_DIR}/bin/pip install --quiet ${PYTHON_DEPS}"
+  ok "Dependencies installed."
+
+  # ── 7. Wrapper script ──────────────────────────────────────────────
+  step "Creating wrapper → ${WRAPPER}"
+  cat > "${WRAPPER}" <<EOF
+#!/bin/sh
+exec ${VENV_DIR}/bin/python ${APP_DIR}/${APP_ENTRY} "\$@"
+EOF
+  chown root:root "${WRAPPER}"
+  chmod 755 "${WRAPPER}"
+  ok "Wrapper created."
+
+  # ── 8. Logrotate ───────────────────────────────────────────────────
+  step "Configuring log rotation"
+  if command -v logrotate >/dev/null 2>&1; then
+    cat > "/etc/logrotate.d/${APP_NAME}" <<EOF
+${LOG_DIR}/cron.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 ${APP_USER} ${APP_USER}
+}
+EOF
+    ok "logrotate config → /etc/logrotate.d/${APP_NAME}"
+  else
+    _no_logrotate=1
+    warn "logrotate not found — adding a weekly truncate line to the cron job."
+  fi
+
+  # ── 9. Cron job ────────────────────────────────────────────────────
+  step "Installing cron job"
+
+  [ -n "${CRON_FILE}" ] || die "No cron directory (/etc/crontabs or /etc/cron.d) found. Install crond first."
+
+  # Build ntfy args (empty string if no topic configured)
+  NTFY_ARGS=""
+  if [ -n "${NTFY_TOPIC}" ]; then
+    NTFY_ARGS=" --ntfy-topic ${NTFY_TOPIC} --ntfy-server ${NTFY_SERVER}"
+  fi
+
+  INNER_CMD="cd ${APP_DIR} && ${VENV_DIR}/bin/python ${APP_DIR}/${APP_ENTRY}${NTFY_ARGS}"
+
+  if [ "${HAS_FLOCK}" -eq 1 ]; then
+    RUN_CMD="flock -n ${LOCK_FILE} /bin/sh -c '${INNER_CMD}'"
+  else
+    RUN_CMD="/bin/sh -c '${INNER_CMD}'"
+  fi
+
+  MAIN_CRON_CMD="${RUN_CMD} >> ${LOG_DIR}/cron.log 2>&1"
+
+  case "${CRON_STYLE}" in
+    crontabs)
+      # busybox crond — file per user under /etc/crontabs/, no username field
+      touch "${CRON_FILE}"
+      chown root:root "${CRON_FILE}"
+      chmod 600 "${CRON_FILE}"
+      if grep -qF "${APP_DIR}/${APP_ENTRY}" "${CRON_FILE}" 2>/dev/null; then
+        ok "Cron entry already present — skipping."
+      else
+        printf '%s %s\n' "${CRON_SCHEDULE}" "${MAIN_CRON_CMD}" >> "${CRON_FILE}"
+        if [ "${_no_logrotate}" -eq 1 ]; then
+          # Weekly log truncation at 03:00 Sunday
+          printf '0 3 * * 0 truncate -s 0 %s/cron.log\n' "${LOG_DIR}" >> "${CRON_FILE}"
+        fi
+        ok "Entry added to ${CRON_FILE}"
+      fi
+      ;;
+    crond)
+      # cronie / dcron — /etc/cron.d/, includes username field
+      if [ -f "${CRON_FILE}" ] && grep -qF "${APP_DIR}/${APP_ENTRY}" "${CRON_FILE}" 2>/dev/null; then
+        ok "Cron entry already present — skipping."
+      else
+        printf '# managed by install.sh — do not edit the main entry manually\n' > "${CRON_FILE}"
+        printf '%s %s %s\n' "${CRON_SCHEDULE}" "${APP_USER}" "${MAIN_CRON_CMD}" >> "${CRON_FILE}"
+        if [ "${_no_logrotate}" -eq 1 ]; then
+          printf '0 3 * * 0 %s truncate -s 0 %s/cron.log\n' "${APP_USER}" "${LOG_DIR}" >> "${CRON_FILE}"
+        fi
+        chown root:root "${CRON_FILE}"
+        chmod 644 "${CRON_FILE}"
+        ok "Created ${CRON_FILE}"
+      fi
+      ;;
+  esac
+
+  # ── 10. Smoke test — import check ─────────────────────────────────
+  step "Running import smoke test"
+  su -s /bin/sh "${APP_USER}" -c \
+    "cd ${APP_DIR} && ${VENV_DIR}/bin/python -c 'import scraper, profile, sources'" \
+    && ok "Imports OK." \
+    || die "Import test failed — check virtualenv and source files above."
+
+  # ── 11. First manual run ───────────────────────────────────────────
+  step "Running application once as '${APP_USER}'"
+  printf '    (this will discover and score live offers — may take several minutes)\n'
+  su -s /bin/sh "${APP_USER}" -c \
+    "cd ${APP_DIR} && ${VENV_DIR}/bin/python ${APP_DIR}/${APP_ENTRY}" \
+    && ok "First run completed successfully." \
+    || warn "First run exited non-zero — check output above."
+
+  # ── 12. Check cron daemon ──────────────────────────────────────────
+  step "Checking cron daemon"
+  if command -v rc-service >/dev/null 2>&1; then
+    if rc-service crond status >/dev/null 2>&1; then
+      ok "crond is running."
+    else
+      warn "crond is NOT running. Enable and start it manually:"
+      printf '      rc-update add crond default\n'
+      printf '      rc-service crond start\n'
+    fi
+  else
+    warn "rc-service not found — verify crond is running manually."
+  fi
+
+  # ── Summary ────────────────────────────────────────────────────────
+  printf '\n\033[1;32m══ Installation complete ══\033[0m\n'
+  printf '\n'
+  printf '  %-28s %s:%s  %s\n' "${APP_DIR}/"              "${APP_USER}" "${APP_USER}" "750"
+  printf '  %-28s %s:%s  %s\n' "${APP_DIR}/venv/"         "${APP_USER}" "${APP_USER}" "750"
+  printf '  %-28s %s:%s  %s\n' "${APP_DIR}/data/"         "${APP_USER}" "${APP_USER}" "750"
+  printf '  %-28s %s:%s  %s\n' "${CONF_DIR}/"             "root"        "root"        "755"
+  printf '  %-28s %s:%s  %s\n' "${TOKEN_FILE}"            "${APP_USER}" "${APP_USER}" "600"
+  printf '  %-28s %s:%s  %s\n' "${LOG_DIR}/"              "${APP_USER}" "${APP_USER}" "750"
+  printf '  %-28s %s:%s  %s\n' "${WRAPPER}"               "root"        "root"        "755"
+  printf '  %-28s %s:%s  %s\n' "${CRON_FILE}"             "root"        "root"        "600/644"
+  printf '\n'
+  printf '  Cron line:\n'
+  case "${CRON_STYLE}" in
+    crontabs) printf '    %s %s\n' "${CRON_SCHEDULE}" "${MAIN_CRON_CMD}" ;;
+    crond)    printf '    %s %s %s\n' "${CRON_SCHEDULE}" "${APP_USER}" "${MAIN_CRON_CMD}" ;;
+  esac
+  printf '\n'
+  printf '  Manual run:  su -s /bin/sh %s -c "cd %s && %s/bin/python %s/%s"\n' \
+    "${APP_USER}" "${APP_DIR}" "${VENV_DIR}" "${APP_DIR}" "${APP_ENTRY}"
+  printf '  Watch logs:  tail -f %s/cron.log\n' "${LOG_DIR}"
+
+  if [ "${_token_created}" -eq 1 ]; then
+    printf '\n\033[1;33m▶ ACTION REQUIRED — fill in the ntfy auth token:\033[0m\n'
+    printf '    echo "your-ntfy-token" > %s\n' "${TOKEN_FILE}"
+    printf '    chmod 600 %s\n' "${TOKEN_FILE}"
+    printf '  Note: scraper.py currently passes --ntfy-server directly; wire token\n'
+    printf '  reading into send_ntfy_notification() via an Authorization header when ready.\n'
+  fi
+
+  if [ -z "${NTFY_TOPIC}" ]; then
+    printf '\n\033[1;33m▶ ntfy topic not configured — edit NTFY_TOPIC at the top of this script\033[0m\n'
+    printf '  then re-run install.sh, or manually add to %s:\n' "${CRON_FILE}"
+    printf '    --ntfy-topic YOUR_TOPIC --ntfy-server %s\n' "${NTFY_SERVER}"
+  fi
+  printf '\n'
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# UNINSTALL
+# ══════════════════════════════════════════════════════════════════════
+uninstall() {
+  need_root
+  detect_env
+
+  printf '\nThis will remove the %s installation.\n' "${APP_NAME}"
+  confirm "Continue with uninstall?" || { echo "Aborted."; exit 0; }
+
+  # Remove cron entry
+  step "Removing cron entry: ${CRON_FILE:-none}"
+  if [ -n "${CRON_FILE}" ] && [ -f "${CRON_FILE}" ]; then
+    rm -f "${CRON_FILE}"
+    ok "Removed."
+  else
+    ok "Cron file not found — skipping."
+  fi
+
+  # Data — ask before destroying
+  step "Application data: ${APP_DIR}/data/"
+  _keep_data=1
+  if [ -d "${APP_DIR}/data" ]; then
+    if confirm "DELETE application data (seen_urls.json, matches.json)?"; then
+      _keep_data=0
+    else
+      ok "Data will be preserved."
+    fi
+  fi
+
+  # Remove app directory (preserving data if requested)
+  step "Removing application files: ${APP_DIR}"
+  if [ -d "${APP_DIR}" ]; then
+    if [ "${_keep_data}" -eq 0 ]; then
+      rm -rf "${APP_DIR}"
+      ok "Removed ${APP_DIR}"
+    else
+      # Remove everything except data/
+      find "${APP_DIR}" -mindepth 1 -maxdepth 1 ! -name 'data' -exec rm -rf {} +
+      ok "Removed code; preserved ${APP_DIR}/data/"
+    fi
+  else
+    ok "Not found — skipping."
+  fi
+
+  # Wrapper
+  step "Removing wrapper: ${WRAPPER}"
+  rm -f "${WRAPPER}"
+  ok "Done."
+
+  # Logs
+  step "Log directory: ${LOG_DIR}"
+  if [ -d "${LOG_DIR}" ]; then
+    if confirm "DELETE logs (${LOG_DIR})?"; then
+      rm -rf "${LOG_DIR}"
+      ok "Deleted."
+    else
+      ok "Preserved at ${LOG_DIR}"
+    fi
+  else
+    ok "Not found — skipping."
+  fi
+  rm -f "/etc/logrotate.d/${APP_NAME}" 2>/dev/null || true
+
+  # Config / token
+  step "Config directory: ${CONF_DIR}"
+  if [ -d "${CONF_DIR}" ]; then
+    if confirm "DELETE config and ntfy token (${CONF_DIR})?"; then
+      rm -rf "${CONF_DIR}"
+      ok "Deleted."
+    else
+      ok "Preserved at ${CONF_DIR}"
+    fi
+  else
+    ok "Not found — skipping."
+  fi
+
+  # System user
+  step "Removing system user '${APP_USER}'"
+  if id "${APP_USER}" >/dev/null 2>&1; then
+    case "${PKG_MGR}" in
+      apk) deluser "${APP_USER}" ;;
+      *)   userdel "${APP_USER}" ;;
+    esac
+    ok "User removed."
+  else
+    ok "User not found — skipping."
+  fi
+
+  printf '\n\033[1;32mUninstall complete.\033[0m\n\n'
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ══════════════════════════════════════════════════════════════════════
+case "${1:-install}" in
+  install|--install)         install   ;;
+  uninstall|--uninstall)     uninstall ;;
+  *)
+    printf 'Usage: %s [install|--uninstall]\n' "$0" >&2
+    exit 1
+    ;;
+esac

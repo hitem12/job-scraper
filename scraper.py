@@ -10,7 +10,11 @@ from pathlib import Path
 import requests
 
 from profile import PROFILE
-from sources import justjoin, nofluffjobs, theprotocol
+from sources import bulldogjob, justjoin, nofluffjobs, rocketjobs, solidjobs, theprotocol
+
+# Sources that all expose the same list_candidate_urls(prefilter_keywords,
+# target_employers) -> [url] signature (sitemap + slug prefilter discovery).
+SITEMAP_SOURCES = [justjoin, theprotocol, rocketjobs, solidjobs, bulldogjob]
 
 REQUEST_DELAY_SECONDS = 0.3
 
@@ -52,20 +56,25 @@ def normalize_title(title):
 def discover_candidates():
     candidates = {}
 
-    print("Discovering candidates on justjoin.it...", file=sys.stderr)
-    for url in justjoin.list_candidate_urls(
-        PROFILE["slug_prefilter_keywords"], PROFILE["target_employers"]
-    ):
-        candidates[url] = (justjoin, None)
-
-    print("Discovering candidates on theprotocol.it...", file=sys.stderr)
-    for url in theprotocol.list_candidate_urls(
-        PROFILE["slug_prefilter_keywords"], PROFILE["target_employers"]
-    ):
-        candidates.setdefault(url, (theprotocol, None))
+    for module in SITEMAP_SOURCES:
+        print(f"Discovering candidates on {module.NAME}...", file=sys.stderr)
+        try:
+            urls = module.list_candidate_urls(
+                PROFILE["slug_prefilter_keywords"], PROFILE["target_employers"]
+            )
+        except requests.RequestException as exc:
+            print(f"  failed to discover {module.NAME}: {exc}", file=sys.stderr)
+            continue
+        for url in urls:
+            candidates.setdefault(url, (module, None))
 
     print("Discovering candidates on nofluffjobs.com...", file=sys.stderr)
-    for url, hint in nofluffjobs.list_candidate_urls(PROFILE["nofluffjobs_categories"]).items():
+    try:
+        nfj_hints = nofluffjobs.list_candidate_urls(PROFILE["nofluffjobs_categories"])
+    except requests.RequestException as exc:
+        print(f"  failed to discover nofluffjobs: {exc}", file=sys.stderr)
+        nfj_hints = {}
+    for url, hint in nfj_hints.items():
         candidates.setdefault(url, (nofluffjobs, hint))
 
     return candidates
@@ -292,6 +301,40 @@ def export_markdown(store, path=MD_PATH):
     path.write_text("\n".join(lines))
 
 
+def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh"):
+    if not new_matches:
+        return
+    top = new_matches[0]
+    count = len(new_matches)
+    if count == 1:
+        title = f"New job match: {top['title']} @ {top['company']}"
+        body = f"Score: {top['score']} | {top['source']}\n{top['url']}"
+        click = top["url"]
+    else:
+        title = f"{count} new job matches found"
+        lines = [
+            f"• {m['title']} @ {m['company']} (score {m['score']})"
+            for m in new_matches[:5]
+        ]
+        if count > 5:
+            lines.append(f"… and {count - 5} more")
+        body = "\n".join(lines)
+        click = None
+
+    headers = {
+        "Title": title,
+        "Tags": "briefcase",
+        "Priority": "high" if top["score"] >= 10 else "default",
+    }
+    if click:
+        headers["Click"] = click
+
+    try:
+        requests.post(f"{server.rstrip('/')}/{topic}", data=body.encode(), headers=headers, timeout=10)
+    except requests.RequestException as exc:
+        print(f"ntfy notification failed: {exc}", file=sys.stderr)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -303,6 +346,17 @@ def parse_args():
         "--export-md",
         action="store_true",
         help="Write all matches, grouped by status, to matches.md for easy LLM analysis.",
+    )
+    parser.add_argument(
+        "--ntfy-topic",
+        metavar="TOPIC",
+        help="Send a ntfy.sh push notification to this topic when new matches are found.",
+    )
+    parser.add_argument(
+        "--ntfy-server",
+        metavar="URL",
+        default="https://ntfy.sh",
+        help="Base URL of the ntfy server (default: https://ntfy.sh).",
     )
     return parser.parse_args()
 
@@ -364,6 +418,9 @@ def main():
     print(f"Found {len(new_matches)} new matching offer(s).", file=sys.stderr)
     for m in new_matches:
         print(f"  - (score {m['score']}, {m['source']}) {m['title']} @ {m['company']} -> {m['url']}")
+
+    if args.ntfy_topic:
+        send_ntfy_notification(args.ntfy_topic, new_matches, args.ntfy_server)
 
     if args.open_browser:
         for m in new_matches:
