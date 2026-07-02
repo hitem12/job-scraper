@@ -13,10 +13,10 @@ set -eu
 APP_NAME="job-scraper"
 APP_USER="jobscraper"          # system user, no login shell
 APP_ENTRY="scraper.py"
-CRON_SCHEDULE="*/15 * * * *"
+CRON_SCHEDULE="0 3 * * *"
 
 # Local ntfy — leave NTFY_TOPIC empty to skip ntfy args in cron
-NTFY_SERVER="http://127.0.0.1:2586"
+NTFY_SERVER="http://[::1]:2345"  # e.g. "https://ntfy.sh"
 NTFY_TOPIC="jobs"                  # e.g. "job-alerts"
 
 # Python deps — keep in sync with pyproject.toml [project.dependencies]
