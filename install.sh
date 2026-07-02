@@ -97,6 +97,15 @@ detect_env() {
   else
     HAS_UV=0
   fi
+
+  # runuser bypasses PAM auth so root can switch user without a password prompt.
+  # su may ask for the target user's password on some PAM configurations even
+  # when invoked by root. Fall back to su only if runuser is absent.
+  if command -v runuser >/dev/null 2>&1; then
+    RUNAS="runuser -s /bin/sh"
+  else
+    RUNAS="su -s /bin/sh"
+  fi
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -270,14 +279,14 @@ PYREQS
   if [ "${HAS_UV}" -eq 1 ]; then
     step "Setting up Python virtualenv → ${VENV_DIR} (via uv)"
     if [ ! -d "${VENV_DIR}" ]; then
-      su -s /bin/sh "${APP_USER}" -c "UV_NO_CACHE=1 uv venv '${VENV_DIR}'"
+      ${RUNAS} "${APP_USER}" -c "UV_NO_CACHE=1 uv venv '${VENV_DIR}'"
       ok "Virtualenv created."
     else
       ok "Virtualenv already exists."
     fi
 
     step "Installing Python dependencies: ${PYTHON_DEPS} (via uv)"
-    su -s /bin/sh "${APP_USER}" -c \
+    ${RUNAS} "${APP_USER}" -c \
       "UV_NO_CACHE=1 uv pip install --quiet --python '${VENV_DIR}/bin/python' -r '${_reqs}'"
   else
     step "Setting up Python virtualenv → ${VENV_DIR}"
@@ -290,7 +299,7 @@ PYREQS
     fi
 
     step "Installing Python dependencies: ${PYTHON_DEPS}"
-    su -s /bin/sh "${APP_USER}" -c \
+    ${RUNAS} "${APP_USER}" -c \
       "${VENV_DIR}/bin/pip install --quiet --upgrade pip && \
        ${VENV_DIR}/bin/pip install --quiet -r '${_reqs}'"
   fi
@@ -384,7 +393,7 @@ EOF
 
   # ── 10. Smoke test — import check ─────────────────────────────────
   step "Running import smoke test"
-  su -s /bin/sh "${APP_USER}" -c \
+  ${RUNAS} "${APP_USER}" -c \
     "cd ${APP_DIR} && ${VENV_DIR}/bin/python -c 'import scraper, profile, sources'" \
     && ok "Imports OK." \
     || die "Import test failed — check virtualenv and source files above."
@@ -392,7 +401,7 @@ EOF
   # ── 11. First manual run ───────────────────────────────────────────
   step "Running application once as '${APP_USER}'"
   printf '    (this will discover and score live offers — may take several minutes)\n'
-  su -s /bin/sh "${APP_USER}" -c \
+  ${RUNAS} "${APP_USER}" -c \
     "cd ${APP_DIR} && ${VENV_DIR}/bin/python ${APP_DIR}/${APP_ENTRY}" \
     && ok "First run completed successfully." \
     || warn "First run exited non-zero — check output above."
