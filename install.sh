@@ -243,7 +243,7 @@ install() {
   if [ "${HAS_UV}" -eq 1 ]; then
     step "Setting up Python virtualenv → ${VENV_DIR} (via uv)"
     if [ ! -d "${VENV_DIR}" ]; then
-      su -s /bin/sh "${APP_USER}" -c "uv venv '${VENV_DIR}'"
+      su -s /bin/sh "${APP_USER}" -c "UV_NO_CACHE=1 uv venv '${VENV_DIR}'"
       ok "Virtualenv created."
     else
       ok "Virtualenv already exists."
@@ -251,7 +251,7 @@ install() {
 
     step "Installing Python dependencies: ${PYTHON_DEPS} (via uv)"
     su -s /bin/sh "${APP_USER}" -c \
-      "uv pip install --quiet --python '${VENV_DIR}/bin/python' ${PYTHON_DEPS}"
+      "UV_NO_CACHE=1 uv pip install --quiet --python '${VENV_DIR}/bin/python' ${PYTHON_DEPS}"
   else
     step "Setting up Python virtualenv → ${VENV_DIR}"
     if [ ! -d "${VENV_DIR}" ]; then
