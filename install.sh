@@ -536,11 +536,60 @@ uninstall() {
 # ══════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [COMMAND]
+
+Install or remove ${APP_NAME} as a cron-driven service (OpenRC).
+Must be run as root.
+
+Commands:
+  install      Install the application (default when no command given)
+  --uninstall  Remove the application interactively
+
+What install does:
+  1. Installs system packages (python3) if missing
+  2. Creates system group and user '${APP_USER}' (no home, no shell)
+  3. Copies source files to ${APP_DIR}/
+  4. Creates Python virtualenv at ${APP_DIR}/venv/
+     (uses uv if available, otherwise python3 -m venv + pip)
+  5. Creates log directory ${LOG_DIR}/
+  6. Creates config directory ${CONF_DIR}/ with empty ntfy token file
+  7. Writes wrapper script to ${WRAPPER}
+  8. Configures logrotate (or a weekly cron trim if logrotate is absent)
+  9. Installs a cron job running every ${CRON_SCHEDULE}
+     with flock to prevent overlapping runs
+ 10. Runs an import smoke test and one live scrape as '${APP_USER}'
+ 11. Checks that crond is running
+
+Configuration (edit at the top of this script before running):
+  APP_NAME        application name and directory prefix  [${APP_NAME}]
+  APP_USER        system user / group to run as          [${APP_USER}]
+  CRON_SCHEDULE   cron time expression                   [${CRON_SCHEDULE}]
+  NTFY_TOPIC      ntfy topic for push notifications      [${NTFY_TOPIC:-<unset>}]
+  NTFY_SERVER     ntfy server base URL                   [${NTFY_SERVER}]
+  PYTHON_DEPS     pip/uv dependencies (space-separated)  [${PYTHON_DEPS}]
+
+Key paths:
+  ${APP_DIR}/          application code and virtualenv
+  ${APP_DIR}/data/     runtime data (seen_urls.json, matches.json)
+  ${LOG_DIR}/          cron.log
+  ${CONF_DIR}/ntfy-token   ntfy auth token (chmod 600, fill in manually)
+  ${WRAPPER}      CLI wrapper
+
+After install:
+  Manual run:  su -s /bin/sh ${APP_USER} -c "cd ${APP_DIR} && ${APP_DIR}/venv/bin/python ${APP_DIR}/${APP_ENTRY}"
+  Watch logs:  tail -f ${LOG_DIR}/cron.log
+EOF
+}
+
 case "${1:-install}" in
   install|--install)         install   ;;
   uninstall|--uninstall)     uninstall ;;
+  help|-h|--help)            usage     ;;
   *)
-    printf 'Usage: %s [install|--uninstall]\n' "$0" >&2
+    printf 'Unknown command: %s\n' "$1" >&2
+    usage >&2
     exit 1
     ;;
 esac
