@@ -301,9 +301,42 @@ def export_markdown(store, path=MD_PATH):
     path.write_text("\n".join(lines))
 
 
-def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh"):
+def _ntfy_post(server, topic, title, body, priority="default", click=None):
+    headers = {
+        "Title": title,
+        "Tags": "briefcase",
+        "Priority": priority,
+    }
+    if click:
+        headers["Click"] = click
+    resp = requests.post(
+        f"{server.rstrip('/')}/{topic}",
+        data=body.encode(),
+        headers=headers,
+        timeout=10,
+    )
+    resp.raise_for_status()
+
+
+def send_ntfy_test(topic, server="https://ntfy.sh"):
+    try:
+        _ntfy_post(server, topic, "job-scraper: test notification", "ntfy is working correctly.", priority="default")
+        print(f"Test notification sent to {server}/{topic}")
+    except requests.RequestException as exc:
+        print(f"ntfy test failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh", always=False):
     if not new_matches:
+        if always:
+            try:
+                _ntfy_post(server, topic, "job-scraper: no new matches", "Scrape complete — nothing new this run.", priority="min")
+                print(f"ntfy notification sent (no new matches) to topic '{topic}'", file=sys.stderr)
+            except requests.RequestException as exc:
+                print(f"ntfy notification failed: {exc}", file=sys.stderr)
         return
+
     top = new_matches[0]
     count = len(new_matches)
     if count == 1:
@@ -321,17 +354,10 @@ def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh"):
         body = "\n".join(lines)
         click = None
 
-    headers = {
-        "Title": title,
-        "Tags": "briefcase",
-        "Priority": "high" if top["score"] >= 10 else "default",
-    }
-    if click:
-        headers["Click"] = click
-
+    priority = "high" if top["score"] >= 10 else "default"
     try:
-        requests.post(f"{server.rstrip('/')}/{topic}", data=body.encode(), headers=headers, timeout=10)
-        print(f"ntfy notification sent to topic '{topic}'")
+        _ntfy_post(server, topic, title, body, priority=priority, click=click)
+        print(f"ntfy notification sent to topic '{topic}'", file=sys.stderr)
     except requests.RequestException as exc:
         print(f"ntfy notification failed: {exc}", file=sys.stderr)
 
@@ -359,11 +385,29 @@ def parse_args():
         default="https://ntfy.sh",
         help="Base URL of the ntfy server (default: https://ntfy.sh).",
     )
+    parser.add_argument(
+        "--ntfy-test",
+        action="store_true",
+        help="Send a test notification to verify ntfy is reachable, then exit.",
+    )
+    parser.add_argument(
+        "--ntfy-always",
+        action="store_true",
+        help="Send an ntfy notification even when no new matches were found (priority: min).",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    if args.ntfy_test:
+        if not args.ntfy_topic:
+            print("--ntfy-test requires --ntfy-topic", file=sys.stderr)
+            sys.exit(1)
+        send_ntfy_test(args.ntfy_topic, args.ntfy_server)
+        return
+
     state = load_state()
 
     candidates = discover_candidates()
@@ -421,7 +465,7 @@ def main():
         print(f"  - (score {m['score']}, {m['source']}) {m['title']} @ {m['company']} -> {m['url']}")
 
     if args.ntfy_topic:
-        send_ntfy_notification(args.ntfy_topic, new_matches, args.ntfy_server)
+        send_ntfy_notification(args.ntfy_topic, new_matches, args.ntfy_server, always=args.ntfy_always)
 
     if args.open_browser:
         for m in new_matches:
