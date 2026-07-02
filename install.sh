@@ -143,12 +143,16 @@ install() {
   else
     case "${PKG_MGR}" in
       apk)
-        adduser -S -D -H -s "${NOLOGIN}" "${APP_USER}"
+        adduser -S -D -H -s "${NOLOGIN}" "${APP_USER}" \
+          || die "adduser failed — see output above."
         ;;
       *)
-        useradd -r -M -s "${NOLOGIN}" "${APP_USER}"
+        useradd -r -M -s "${NOLOGIN}" "${APP_USER}" \
+          || die "useradd failed — see output above."
         ;;
     esac
+    id "${APP_USER}" >/dev/null 2>&1 \
+      || die "User '${APP_USER}' still not found after creation attempt."
     ok "Created system user '${APP_USER}' (no home, no shell)."
   fi
 
