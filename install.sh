@@ -90,6 +90,13 @@ detect_env() {
     warn "flock not found — parallel cron runs will not be serialised."
     warn "Install util-linux to get flock."
   fi
+
+  # uv (preferred over venv+pip when available)
+  if command -v uv >/dev/null 2>&1; then
+    HAS_UV=1
+  else
+    HAS_UV=0
+  fi
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -214,19 +221,33 @@ install() {
   fi
 
   # ── 6. Python virtualenv ───────────────────────────────────────────
-  step "Setting up Python virtualenv → ${VENV_DIR}"
-  if [ ! -d "${VENV_DIR}" ]; then
-    python3 -m venv "${VENV_DIR}"
-    chown -R "${APP_USER}:${APP_USER}" "${VENV_DIR}"
-    ok "Virtualenv created."
-  else
-    ok "Virtualenv already exists."
-  fi
+  if [ "${HAS_UV}" -eq 1 ]; then
+    step "Setting up Python virtualenv → ${VENV_DIR} (via uv)"
+    if [ ! -d "${VENV_DIR}" ]; then
+      su -s /bin/sh "${APP_USER}" -c "uv venv '${VENV_DIR}'"
+      ok "Virtualenv created."
+    else
+      ok "Virtualenv already exists."
+    fi
 
-  step "Installing Python dependencies: ${PYTHON_DEPS}"
-  su -s /bin/sh "${APP_USER}" -c \
-    "${VENV_DIR}/bin/pip install --quiet --upgrade pip && \
-     ${VENV_DIR}/bin/pip install --quiet ${PYTHON_DEPS}"
+    step "Installing Python dependencies: ${PYTHON_DEPS} (via uv)"
+    su -s /bin/sh "${APP_USER}" -c \
+      "uv pip install --quiet --python '${VENV_DIR}/bin/python' ${PYTHON_DEPS}"
+  else
+    step "Setting up Python virtualenv → ${VENV_DIR}"
+    if [ ! -d "${VENV_DIR}" ]; then
+      python3 -m venv "${VENV_DIR}"
+      chown -R "${APP_USER}:${APP_USER}" "${VENV_DIR}"
+      ok "Virtualenv created."
+    else
+      ok "Virtualenv already exists."
+    fi
+
+    step "Installing Python dependencies: ${PYTHON_DEPS}"
+    su -s /bin/sh "${APP_USER}" -c \
+      "${VENV_DIR}/bin/pip install --quiet --upgrade pip && \
+       ${VENV_DIR}/bin/pip install --quiet ${PYTHON_DEPS}"
+  fi
   ok "Dependencies installed."
 
   # ── 7. Wrapper script ──────────────────────────────────────────────
