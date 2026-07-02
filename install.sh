@@ -17,7 +17,7 @@ CRON_SCHEDULE="*/15 * * * *"
 
 # Local ntfy — leave NTFY_TOPIC empty to skip ntfy args in cron
 NTFY_SERVER="http://127.0.0.1:2586"
-NTFY_TOPIC=""                  # e.g. "job-alerts"
+NTFY_TOPIC="jobs"                  # e.g. "job-alerts"
 
 # Python deps — keep in sync with pyproject.toml [project.dependencies]
 PYTHON_DEPS="requests>=2.31"
@@ -240,6 +240,14 @@ install() {
   fi
 
   # ── 6. Python virtualenv ───────────────────────────────────────────
+  # Write deps to a temp file so '>=' version specifiers are never
+  # expanded inline in a shell command (where '>' is a redirect operator).
+  _reqs=$(mktemp)
+  cat > "${_reqs}" <<PYREQS
+${PYTHON_DEPS}
+PYREQS
+  chmod 644 "${_reqs}"
+
   if [ "${HAS_UV}" -eq 1 ]; then
     step "Setting up Python virtualenv → ${VENV_DIR} (via uv)"
     if [ ! -d "${VENV_DIR}" ]; then
@@ -251,7 +259,7 @@ install() {
 
     step "Installing Python dependencies: ${PYTHON_DEPS} (via uv)"
     su -s /bin/sh "${APP_USER}" -c \
-      "UV_NO_CACHE=1 uv pip install --quiet --python '${VENV_DIR}/bin/python' ${PYTHON_DEPS}"
+      "UV_NO_CACHE=1 uv pip install --quiet --python '${VENV_DIR}/bin/python' -r '${_reqs}'"
   else
     step "Setting up Python virtualenv → ${VENV_DIR}"
     if [ ! -d "${VENV_DIR}" ]; then
@@ -265,8 +273,9 @@ install() {
     step "Installing Python dependencies: ${PYTHON_DEPS}"
     su -s /bin/sh "${APP_USER}" -c \
       "${VENV_DIR}/bin/pip install --quiet --upgrade pip && \
-       ${VENV_DIR}/bin/pip install --quiet ${PYTHON_DEPS}"
+       ${VENV_DIR}/bin/pip install --quiet -r '${_reqs}'"
   fi
+  rm -f "${_reqs}"
   ok "Dependencies installed."
 
   # ── 7. Wrapper script ──────────────────────────────────────────────
