@@ -344,7 +344,7 @@ EOF
   # Build ntfy args (empty string if no topic configured)
   NTFY_ARGS=""
   if [ -n "${NTFY_TOPIC}" ]; then
-    NTFY_ARGS=" --ntfy-topic ${NTFY_TOPIC} --ntfy-server ${NTFY_SERVER}"
+    NTFY_ARGS=" --ntfy-topic ${NTFY_TOPIC} --ntfy-server ${NTFY_SERVER} --ntfy-token-file ${TOKEN_FILE}"
   fi
 
   INNER_CMD="cd ${APP_DIR} && ${VENV_DIR}/bin/python ${APP_DIR}/${APP_ENTRY}${NTFY_ARGS}"
