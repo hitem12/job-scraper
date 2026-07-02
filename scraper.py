@@ -331,6 +331,7 @@ def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh"):
 
     try:
         requests.post(f"{server.rstrip('/')}/{topic}", data=body.encode(), headers=headers, timeout=10)
+        print(f"ntfy notification sent to topic '{topic}'")
     except requests.RequestException as exc:
         print(f"ntfy notification failed: {exc}", file=sys.stderr)
 
