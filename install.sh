@@ -31,7 +31,8 @@ VENV_DIR="${APP_DIR}/venv"
 LOG_DIR="/var/log/${APP_NAME}"
 CONF_DIR="/etc/${APP_NAME}"
 TOKEN_FILE="${CONF_DIR}/ntfy-token"
-WRAPPER="/usr/local/bin/${APP_NAME}"
+WRAPPER="/usr/local/bin/${APP_NAME}-scan"
+WEBUI_WRAPPER="/usr/local/bin/${APP_NAME}-ui"
 LOCK_FILE="/run/${APP_NAME}.lock"
 
 # ══════════════════════════════════════════════════════════════════════
@@ -306,15 +307,22 @@ PYREQS
   rm -f "${_reqs}"
   ok "Dependencies installed."
 
-  # ── 7. Wrapper script ──────────────────────────────────────────────
-  step "Creating wrapper → ${WRAPPER}"
+  # ── 7. Wrapper scripts ─────────────────────────────────────────────
+  step "Creating wrappers → ${WRAPPER}, ${WEBUI_WRAPPER}"
   cat > "${WRAPPER}" <<EOF
 #!/bin/sh
 exec ${VENV_DIR}/bin/python ${APP_DIR}/${APP_ENTRY} "\$@"
 EOF
   chown root:root "${WRAPPER}"
   chmod 755 "${WRAPPER}"
-  ok "Wrapper created."
+
+  cat > "${WEBUI_WRAPPER}" <<EOF
+#!/bin/sh
+exec ${VENV_DIR}/bin/python ${APP_DIR}/webui.py "\$@"
+EOF
+  chown root:root "${WEBUI_WRAPPER}"
+  chmod 755 "${WEBUI_WRAPPER}"
+  ok "Wrappers created."
 
   # ── 8. Logrotate ───────────────────────────────────────────────────
   step "Configuring log rotation"
@@ -430,6 +438,7 @@ EOF
   printf '  %-28s %s:%s  %s\n' "${TOKEN_FILE}"            "${APP_USER}" "${APP_USER}" "600"
   printf '  %-28s %s:%s  %s\n' "${LOG_DIR}/"              "${APP_USER}" "${APP_USER}" "750"
   printf '  %-28s %s:%s  %s\n' "${WRAPPER}"               "root"        "root"        "755"
+  printf '  %-28s %s:%s  %s\n' "${WEBUI_WRAPPER}"         "root"        "root"        "755"
   printf '  %-28s %s:%s  %s\n' "${CRON_FILE}"             "root"        "root"        "600/644"
   printf '\n'
   printf '  Cron line:\n'
@@ -438,8 +447,8 @@ EOF
     crond)    printf '    %s %s %s\n' "${CRON_SCHEDULE}" "${APP_USER}" "${MAIN_CRON_CMD}" ;;
   esac
   printf '\n'
-  printf '  Manual run:  su -s /bin/sh %s -c "cd %s && %s/bin/python %s/%s"\n' \
-    "${APP_USER}" "${APP_DIR}" "${VENV_DIR}" "${APP_DIR}" "${APP_ENTRY}"
+  printf '  Scan now:    %s\n' "${WRAPPER}"
+  printf '  Web UI:      %s  (opens http://127.0.0.1:8765)\n' "${WEBUI_WRAPPER}"
   printf '  Watch logs:  tail -f %s/cron.log\n' "${LOG_DIR}"
 
   if [ "${_token_created}" -eq 1 ]; then
@@ -503,9 +512,9 @@ uninstall() {
     ok "Not found — skipping."
   fi
 
-  # Wrapper
-  step "Removing wrapper: ${WRAPPER}"
-  rm -f "${WRAPPER}"
+  # Wrappers
+  step "Removing wrappers"
+  rm -f "${WRAPPER}" "${WEBUI_WRAPPER}"
   ok "Done."
 
   # Logs
@@ -603,10 +612,12 @@ Key paths:
   ${APP_DIR}/data/     runtime data (seen_urls.json, matches.json)
   ${LOG_DIR}/          cron.log
   ${CONF_DIR}/ntfy-token   ntfy auth token (chmod 600, fill in manually)
-  ${WRAPPER}      CLI wrapper
+  ${WRAPPER}        run a scrape manually
+  ${WEBUI_WRAPPER}     open the match browser UI
 
 After install:
-  Manual run:  su -s /bin/sh ${APP_USER} -c "cd ${APP_DIR} && ${APP_DIR}/venv/bin/python ${APP_DIR}/${APP_ENTRY}"
+  Scan now:    ${WRAPPER}
+  Web UI:      ${WEBUI_WRAPPER}
   Watch logs:  tail -f ${LOG_DIR}/cron.log
 EOF
 }

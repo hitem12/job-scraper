@@ -1,10 +1,40 @@
 import argparse
 import json
+import threading
+import time
 import webbrowser
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import scraper
+
+# ── SSE live-update machinery ─────────────────────────────────────────────────
+_sse_clients: list = []
+_sse_lock = threading.Lock()
+
+
+def _watch_matches_file():
+    """Background thread: push 'update' to all SSE clients when matches.json changes."""
+    last_mtime = 0.0
+    while True:
+        try:
+            mtime = scraper.MATCHES_STORE_PATH.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        if mtime != last_mtime:
+            if last_mtime != 0.0:  # skip the very first read (not a real change)
+                with _sse_lock:
+                    dead = []
+                    for wfile in list(_sse_clients):
+                        try:
+                            wfile.write(b"data: update\n\n")
+                            wfile.flush()
+                        except OSError:
+                            dead.append(wfile)
+                    for wfile in dead:
+                        _sse_clients.remove(wfile)
+            last_mtime = mtime
+        time.sleep(2)
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -185,7 +215,12 @@ document.addEventListener('keydown', (e) => {
 });
 
 load();
-setInterval(poll, 20000);
+
+// SSE: instant update when the server detects matches.json changed
+const es = new EventSource('/api/events');
+es.onmessage = (e) => { if (e.data === 'update') poll(); };
+// fallback polling — catches anything SSE misses (e.g. reconnection gaps)
+setInterval(poll, 60000);
 </script>
 </body>
 </html>
@@ -211,6 +246,27 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == "/api/matches":
             self._send_json(scraper.load_matches_store())
+        elif self.path == "/api/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            with _sse_lock:
+                _sse_clients.append(self.wfile)
+            try:
+                self.wfile.write(b": connected\n\n")
+                self.wfile.flush()
+                while True:
+                    time.sleep(30)
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+            except OSError:
+                pass
+            finally:
+                with _sse_lock:
+                    if self.wfile in _sse_clients:
+                        _sse_clients.remove(self.wfile)
         else:
             self.send_response(404)
             self.end_headers()
@@ -272,7 +328,10 @@ def main():
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
 
-    server = HTTPServer(("127.0.0.1", args.port), Handler)
+    watcher = threading.Thread(target=_watch_matches_file, daemon=True)
+    watcher.start()
+
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{args.port}/"
     print(f"Serving job match browser at {url} (Ctrl+C to stop)")
     if not args.no_browser:
