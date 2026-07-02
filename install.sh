@@ -143,18 +143,37 @@ install() {
       ;;
   esac
 
-  # ── 2. System user ─────────────────────────────────────────────────
+  # ── 2. System group and user ───────────────────────────────────────
+  step "Ensuring system group '${APP_USER}'"
+  if grep -q "^${APP_USER}:" /etc/group 2>/dev/null; then
+    ok "Group '${APP_USER}' already exists."
+  else
+    case "${PKG_MGR}" in
+      apk)
+        addgroup -S "${APP_USER}" \
+          || die "addgroup failed — see output above."
+        ;;
+      *)
+        groupadd -r "${APP_USER}" \
+          || die "groupadd failed — see output above."
+        ;;
+    esac
+    grep -q "^${APP_USER}:" /etc/group \
+      || die "Group '${APP_USER}' still not found after creation attempt."
+    ok "Created system group '${APP_USER}'."
+  fi
+
   step "Ensuring system user '${APP_USER}'"
   if id "${APP_USER}" >/dev/null 2>&1; then
     ok "User '${APP_USER}' already exists."
   else
     case "${PKG_MGR}" in
       apk)
-        adduser -S -D -H -s "${NOLOGIN}" "${APP_USER}" \
+        adduser -S -D -H -s "${NOLOGIN}" -G "${APP_USER}" "${APP_USER}" \
           || die "adduser failed — see output above."
         ;;
       *)
-        useradd -r -M -s "${NOLOGIN}" "${APP_USER}" \
+        useradd -r -M -s "${NOLOGIN}" -g "${APP_USER}" "${APP_USER}" \
           || die "useradd failed — see output above."
         ;;
     esac
@@ -479,7 +498,7 @@ uninstall() {
     ok "Not found — skipping."
   fi
 
-  # System user
+  # System user and group
   step "Removing system user '${APP_USER}'"
   if id "${APP_USER}" >/dev/null 2>&1; then
     case "${PKG_MGR}" in
@@ -489,6 +508,17 @@ uninstall() {
     ok "User removed."
   else
     ok "User not found — skipping."
+  fi
+
+  step "Removing system group '${APP_USER}'"
+  if grep -q "^${APP_USER}:" /etc/group 2>/dev/null; then
+    case "${PKG_MGR}" in
+      apk) delgroup "${APP_USER}" ;;
+      *)   groupdel "${APP_USER}" ;;
+    esac
+    ok "Group removed."
+  else
+    ok "Group not found — skipping."
   fi
 
   printf '\n\033[1;32mUninstall complete.\033[0m\n\n'
