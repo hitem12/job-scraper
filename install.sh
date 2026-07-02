@@ -232,11 +232,30 @@ install() {
   if [ -f "${TOKEN_FILE}" ]; then
     ok "Token file already exists — not overwriting."
   else
-    : > "${TOKEN_FILE}"
+    cat > "${TOKEN_FILE}" <<EOF
+# ntfy authentication token for ${APP_NAME}
+#
+# If your ntfy server requires authentication, paste the token here.
+# The token is read by the application at runtime and passed as:
+#   Authorization: Bearer <token>
+#
+# How to obtain a token:
+#   - Self-hosted ntfy (${NTFY_SERVER}):
+#       ntfy token add ${APP_USER}
+#     or via the web UI: Settings → Users & access control → Access tokens
+#   - ntfy.sh (public cloud):
+#       Log in at https://ntfy.sh and go to Account → Access tokens
+#
+# Leave this file empty or with only comments if your server has no auth.
+#
+# Example:
+#   tk_AgCKGqGHznCdRvFHVFqKGGPYbRl0iy7v
+
+EOF
     chown "${APP_USER}:${APP_USER}" "${TOKEN_FILE}"
     chmod 600 "${TOKEN_FILE}"
     _token_created=1
-    ok "Created empty token file: ${TOKEN_FILE}"
+    ok "Created token file with instructions: ${TOKEN_FILE}"
   fi
 
   # ── 6. Python virtualenv ───────────────────────────────────────────
