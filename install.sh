@@ -33,6 +33,8 @@ CONF_DIR="/etc/${APP_NAME}"
 TOKEN_FILE="${CONF_DIR}/ntfy-token"
 WRAPPER="/usr/local/bin/${APP_NAME}-scan"
 WEBUI_WRAPPER="/usr/local/bin/${APP_NAME}-ui"
+WEBUI_SERVICE="${APP_NAME}-ui"
+WEBUI_INITD="/etc/init.d/${WEBUI_SERVICE}"
 LOCK_FILE="/run/${APP_NAME}.lock"
 
 # ══════════════════════════════════════════════════════════════════════
@@ -324,7 +326,42 @@ EOF
   chmod 755 "${WEBUI_WRAPPER}"
   ok "Wrappers created."
 
-  # ── 8. Logrotate ───────────────────────────────────────────────────
+  # ── 8. Web UI OpenRC service ───────────────────────────────────────
+  step "Installing OpenRC service → ${WEBUI_INITD}"
+  cat > "${WEBUI_INITD}" <<EOF
+#!/sbin/openrc-run
+description="job-scraper match browser"
+
+command="${VENV_DIR}/bin/python"
+command_args="${APP_DIR}/webui.py --no-browser"
+command_user="${APP_USER}:${APP_USER}"
+command_background=true
+pidfile="/run/${WEBUI_SERVICE}.pid"
+output_log="${LOG_DIR}/webui.log"
+error_log="${LOG_DIR}/webui.log"
+directory="${APP_DIR}"
+
+depend() {
+    need net
+    after logger
+}
+EOF
+  chmod 755 "${WEBUI_INITD}"
+  chown root:root "${WEBUI_INITD}"
+
+  if command -v rc-update >/dev/null 2>&1; then
+    rc-update add "${WEBUI_SERVICE}" default 2>/dev/null || true
+    ok "Service enabled in default runlevel."
+    rc-service "${WEBUI_SERVICE}" start \
+      && ok "${WEBUI_SERVICE} started." \
+      || warn "Failed to start ${WEBUI_SERVICE} — check logs: tail -f ${LOG_DIR}/webui.log"
+  else
+    warn "rc-update not found — enable the service manually:"
+    printf '      rc-update add %s default\n' "${WEBUI_SERVICE}"
+    printf '      rc-service %s start\n' "${WEBUI_SERVICE}"
+  fi
+
+  # ── 10. Logrotate ──────────────────────────────────────────────────
   step "Configuring log rotation"
   if command -v logrotate >/dev/null 2>&1; then
     cat > "/etc/logrotate.d/${APP_NAME}" <<EOF
@@ -344,7 +381,7 @@ EOF
     warn "logrotate not found — adding a weekly truncate line to the cron job."
   fi
 
-  # ── 9. Cron job ────────────────────────────────────────────────────
+  # ── 11. Cron job ───────────────────────────────────────────────────
   step "Installing cron job"
 
   [ -n "${CRON_FILE}" ] || die "No cron directory (/etc/crontabs or /etc/cron.d) found. Install crond first."
@@ -399,14 +436,14 @@ EOF
       ;;
   esac
 
-  # ── 10. Smoke test — import check ─────────────────────────────────
+  # ── 12. Smoke test — import check ─────────────────────────────────
   step "Running import smoke test"
   ${RUNAS} "${APP_USER}" -c \
     "cd ${APP_DIR} && ${VENV_DIR}/bin/python -c 'import scraper, profile, sources'" \
     && ok "Imports OK." \
     || die "Import test failed — check virtualenv and source files above."
 
-  # ── 11. First manual run ───────────────────────────────────────────
+  # ── 13. First manual run ───────────────────────────────────────────
   step "Running application once as '${APP_USER}'"
   printf '    (this will discover and score live offers — may take several minutes)\n'
   ${RUNAS} "${APP_USER}" -c \
@@ -414,7 +451,7 @@ EOF
     && ok "First run completed successfully." \
     || warn "First run exited non-zero — check output above."
 
-  # ── 12. Check cron daemon ──────────────────────────────────────────
+  # ── 14. Check cron daemon ──────────────────────────────────────────
   step "Checking cron daemon"
   if command -v rc-service >/dev/null 2>&1; then
     if rc-service crond status >/dev/null 2>&1; then
@@ -439,6 +476,7 @@ EOF
   printf '  %-28s %s:%s  %s\n' "${LOG_DIR}/"              "${APP_USER}" "${APP_USER}" "750"
   printf '  %-28s %s:%s  %s\n' "${WRAPPER}"               "root"        "root"        "755"
   printf '  %-28s %s:%s  %s\n' "${WEBUI_WRAPPER}"         "root"        "root"        "755"
+  printf '  %-28s %s:%s  %s\n' "${WEBUI_INITD}"           "root"        "root"        "755"
   printf '  %-28s %s:%s  %s\n' "${CRON_FILE}"             "root"        "root"        "600/644"
   printf '\n'
   printf '  Cron line:\n'
@@ -448,7 +486,7 @@ EOF
   esac
   printf '\n'
   printf '  Scan now:    %s\n' "${WRAPPER}"
-  printf '  Web UI:      %s  (opens http://127.0.0.1:8765)\n' "${WEBUI_WRAPPER}"
+  printf '  Web UI:      http://127.0.0.1:8765  (rc-service %s status)\n' "${WEBUI_SERVICE}"
   printf '  Watch logs:  tail -f %s/cron.log\n' "${LOG_DIR}"
 
   if [ "${_token_created}" -eq 1 ]; then
@@ -510,6 +548,17 @@ uninstall() {
     fi
   else
     ok "Not found — skipping."
+  fi
+
+  # Web UI service
+  step "Stopping and removing OpenRC service '${WEBUI_SERVICE}'"
+  if [ -f "${WEBUI_INITD}" ]; then
+    rc-service "${WEBUI_SERVICE}" stop 2>/dev/null || true
+    rc-update del "${WEBUI_SERVICE}" 2>/dev/null || true
+    rm -f "${WEBUI_INITD}"
+    ok "Service removed."
+  else
+    ok "Init script not found — skipping."
   fi
 
   # Wrappers
