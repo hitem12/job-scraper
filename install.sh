@@ -35,7 +35,7 @@ WRAPPER="/usr/local/bin/${APP_NAME}-scan"
 WEBUI_WRAPPER="/usr/local/bin/${APP_NAME}-ui"
 WEBUI_SERVICE="${APP_NAME}-ui"
 WEBUI_INITD="/etc/init.d/${WEBUI_SERVICE}"
-LOCK_FILE="/run/${APP_NAME}.lock"
+LOCK_FILE="/run/lock/${APP_NAME}.lock"
 
 # ══════════════════════════════════════════════════════════════════════
 # HELPERS
