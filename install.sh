@@ -35,7 +35,9 @@ WRAPPER="/usr/local/bin/${APP_NAME}-scan"
 WEBUI_WRAPPER="/usr/local/bin/${APP_NAME}-ui"
 WEBUI_SERVICE="${APP_NAME}-ui"
 WEBUI_INITD="/etc/init.d/${WEBUI_SERVICE}"
-LOCK_FILE="/run/lock/${APP_NAME}.lock"
+LOCK_FILE="/run/${APP_NAME}/cron.lock"
+RUNTIME_DIR="/run/${APP_NAME}"
+LOCAL_START="/etc/local.d/${APP_NAME}.start"
 
 # ══════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -229,14 +231,30 @@ install() {
   chown "${APP_USER}:${APP_USER}" "${APP_DIR}/data"
   chmod 750 "${APP_DIR}/data"
 
-  # ── 4. Log directory ───────────────────────────────────────────────
+  # ── 4. Runtime directory (lock file lives here) ────────────────────
+  step "Creating runtime directory → ${RUNTIME_DIR}"
+  mkdir -p "${RUNTIME_DIR}"
+  chown "${APP_USER}:${APP_USER}" "${RUNTIME_DIR}"
+  chmod 750 "${RUNTIME_DIR}"
+  # /run is tmpfs — recreate the dir on every boot via an OpenRC local.d script
+  # (works on Alpine and Artix; does not require opentmpfiles)
+  cat > "${LOCAL_START}" <<EOF
+#!/bin/sh
+mkdir -p '${RUNTIME_DIR}'
+chown '${APP_USER}:${APP_USER}' '${RUNTIME_DIR}'
+chmod 750 '${RUNTIME_DIR}'
+EOF
+  chmod 755 "${LOCAL_START}"
+  ok "Done (boot script → ${LOCAL_START})"
+
+  # ── 5. Log directory ───────────────────────────────────────────────
   step "Creating log directory → ${LOG_DIR}"
   mkdir -p "${LOG_DIR}"
   chown "${APP_USER}:${APP_USER}" "${LOG_DIR}"
   chmod 750 "${LOG_DIR}"
   ok "Done."
 
-  # ── 5. Config directory & ntfy token ──────────────────────────────
+  # ── 6. Config directory & ntfy token ──────────────────────────────
   step "Setting up config directory → ${CONF_DIR}"
   mkdir -p "${CONF_DIR}"
   # Keep CONF_DIR readable by root only; token is readable by APP_USER only
@@ -270,7 +288,7 @@ EOF
     ok "Created token file with instructions: ${TOKEN_FILE}"
   fi
 
-  # ── 6. Python virtualenv ───────────────────────────────────────────
+  # ── 7. Python virtualenv ───────────────────────────────────────────
   # Write deps to a temp file so '>=' version specifiers are never
   # expanded inline in a shell command (where '>' is a redirect operator).
   _reqs=$(mktemp)
@@ -309,7 +327,7 @@ PYREQS
   rm -f "${_reqs}"
   ok "Dependencies installed."
 
-  # ── 7. Wrapper scripts ─────────────────────────────────────────────
+  # ── 8. Wrapper scripts ─────────────────────────────────────────────
   step "Creating wrappers → ${WRAPPER}, ${WEBUI_WRAPPER}"
   cat > "${WRAPPER}" <<EOF
 #!/bin/sh
@@ -326,7 +344,7 @@ EOF
   chmod 755 "${WEBUI_WRAPPER}"
   ok "Wrappers created."
 
-  # ── 8. Web UI OpenRC service ───────────────────────────────────────
+  # ── 9. Web UI OpenRC service ───────────────────────────────────────
   step "Installing OpenRC service → ${WEBUI_INITD}"
   cat > "${WEBUI_INITD}" <<EOF
 #!/sbin/openrc-run
@@ -361,7 +379,7 @@ EOF
     printf '      rc-service %s start\n' "${WEBUI_SERVICE}"
   fi
 
-  # ── 10. Logrotate ──────────────────────────────────────────────────
+  # ── 10. Logrotate ─────────────────────────────────────────────────
   step "Configuring log rotation"
   if command -v logrotate >/dev/null 2>&1; then
     cat > "/etc/logrotate.d/${APP_NAME}" <<EOF
@@ -493,8 +511,6 @@ EOF
     printf '\n\033[1;33m▶ ACTION REQUIRED — fill in the ntfy auth token:\033[0m\n'
     printf '    echo "your-ntfy-token" > %s\n' "${TOKEN_FILE}"
     printf '    chmod 600 %s\n' "${TOKEN_FILE}"
-    printf '  Note: scraper.py currently passes --ntfy-server directly; wire token\n'
-    printf '  reading into send_ntfy_notification() via an Authorization header when ready.\n'
   fi
 
   if [ -z "${NTFY_TOPIC}" ]; then
@@ -579,6 +595,7 @@ uninstall() {
     ok "Not found — skipping."
   fi
   rm -f "/etc/logrotate.d/${APP_NAME}" 2>/dev/null || true
+  rm -f "${LOCAL_START}" 2>/dev/null || true
 
   # Config / token
   step "Config directory: ${CONF_DIR}"
