@@ -187,6 +187,37 @@ def save_matches_store(store):
     MATCHES_STORE_PATH.write_text(json.dumps(store, indent=2))
 
 
+def dedup_new_matches(matches):
+    """Collapse same-run matches that are the same job posted under multiple
+    URLs (e.g. one ad per city), so the log/notification/store each only see
+    it once per run instead of once per URL."""
+    groups = {}
+    order = []
+    for m in matches:
+        key = (m["company"].strip().lower(), normalize_title(m["title"]))
+        if key not in groups:
+            order.append(key)
+        groups.setdefault(key, []).append(m)
+
+    deduped = []
+    for key in order:
+        entries = groups[key]
+        if len(entries) == 1:
+            deduped.append(entries[0])
+            continue
+        best = max(entries, key=lambda m: m["score"])
+        merged_localities = []
+        for m in entries:
+            for loc in m["localities"]:
+                if loc not in merged_localities:
+                    merged_localities.append(loc)
+        merged = dict(best)
+        merged["localities"] = merged_localities
+        merged["remote"] = any(m["remote"] for m in entries)
+        deduped.append(merged)
+    return deduped
+
+
 STATUS_PRIORITY = {"cv_sent": 3, "interesting": 2, "not_for_me": 1, "new": 0}
 
 
@@ -483,6 +514,8 @@ def main():
         time.sleep(REQUEST_DELAY_SECONDS)
     if total:
         print(file=sys.stderr)
+
+    new_matches = dedup_new_matches(new_matches)
 
     append_matches_log(new_matches)
     update_matches_store(new_matches)
