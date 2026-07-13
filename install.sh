@@ -13,8 +13,8 @@ set -eu
 APP_NAME="job-scraper"
 APP_USER="jobscraper"          # system user, no login shell
 APP_ENTRY="scraper.py"
-CRON_SCHEDULE="0 3 * * *"
-
+CRON_SCHEDULE="*/30 * * * *"
+LOG_ROTATE_ENABLE=0
 # Local ntfy — leave NTFY_TOPIC empty to skip ntfy args in cron
 NTFY_SERVER="http://[::1]:2345"  # e.g. "https://ntfy.sh"
 NTFY_TOPIC="jobs"                  # e.g. "job-alerts"
@@ -380,6 +380,7 @@ EOF
   fi
 
   # ── 10. Logrotate ─────────────────────────────────────────────────
+  if [ "${LOG_ROTATE_ENABLE}" -eq 1 ]; then
   step "Configuring log rotation"
   if command -v logrotate >/dev/null 2>&1; then
     cat > "/etc/logrotate.d/${APP_NAME}" <<EOF
@@ -398,7 +399,7 @@ EOF
     _no_logrotate=1
     warn "logrotate not found — adding a weekly truncate line to the cron job."
   fi
-
+  fi
   # ── 11. Cron job ───────────────────────────────────────────────────
   step "Installing cron job"
 
@@ -417,9 +418,11 @@ EOF
   else
     RUN_CMD="/bin/sh -c '${INNER_CMD}'"
   fi
-
-  MAIN_CRON_CMD="${RUN_CMD} >> ${LOG_DIR}/cron.log 2>&1"
-
+  if [ "${_no_logrotate}" -eq 1 ]; then
+   MAIN_CRON_CMD="${RUN_CMD} >> ${LOG_DIR}/cron.log 2>&1"
+  else
+    MAIN_CRON_CMD="${RUN_CMD}"
+  fi
   case "${CRON_STYLE}" in
     crontabs)
       # busybox crond — file per user under /etc/crontabs/, no username field
