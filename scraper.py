@@ -15,9 +15,11 @@ from sources.log_config import log_config
 from profile import PROFILE
 from sources import bulldogjob, justjoin, nofluffjobs, rocketjobs, solidjobs, theprotocol
 
+
+app_name = "job-scraper"
 # Sources that all expose the same list_candidate_urls(prefilter_keywords,
 # target_employers) -> [url] signature (sitemap + slug prefilter discovery).
-logger = log_config(name=__name__, log_file=f"/var/log/{__name__}/{__name__}.log")
+logger = log_config(name=app_name, log_file=f"/var/log/{app_name}/{app_name}.log")
 
 SITEMAP_SOURCES = [justjoin, theprotocol, rocketjobs, solidjobs, bulldogjob]
 
