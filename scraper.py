@@ -64,22 +64,22 @@ def discover_candidates():
     candidates = {}
 
     for module in SITEMAP_SOURCES:
-        logger.info(f"Discovering candidates on {module.NAME}...", file=sys.stderr)
+        logger.info(f"Discovering candidates on {module.NAME}...")
         try:
             urls = module.list_candidate_urls(
                 PROFILE["slug_prefilter_keywords"], PROFILE["target_employers"]
             )
         except requests.RequestException as exc:
-            logger.info(f"  failed to discover {module.NAME}: {exc}", file=sys.stderr)
+            logger.info(f"  failed to discover {module.NAME}: {exc}")
             continue
         for url in urls:
             candidates.setdefault(url, (module, None))
 
-    logger.info("Discovering candidates on nofluffjobs.com...", file=sys.stderr)
+    logger.info("Discovering candidates on nofluffjobs.com...")
     try:
         nfj_hints = nofluffjobs.list_candidate_urls(PROFILE["nofluffjobs_categories"])
     except requests.RequestException as exc:
-        logger.info(f"  failed to discover nofluffjobs: {exc}", file=sys.stderr)
+        logger.info(f"  failed to discover nofluffjobs: {exc}")
         nfj_hints = {}
     for url, hint in nfj_hints.items():
         candidates.setdefault(url, (nofluffjobs, hint))
@@ -377,7 +377,7 @@ def send_ntfy_test(topic, server="https://ntfy.sh", token=None):
         _ntfy_post(server, topic, "job-scraper: test notification", "ntfy is working correctly.", token=token)
         logger.info(f"Test notification sent to {server}/{topic}")
     except requests.RequestException as exc:
-        logger.info(f"ntfy test failed: {exc}", file=sys.stderr)
+        logger.info(f"ntfy test failed: {exc}")
         sys.exit(1)
 
 
@@ -386,9 +386,9 @@ def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh", always=
         if always:
             try:
                 _ntfy_post(server, topic, "job-scraper: no new matches", "Scrape complete — nothing new this run.", priority="min", token=token)
-                logger.info(f"ntfy notification sent (no new matches) to topic '{topic}'", file=sys.stderr)
+                logger.info(f"ntfy notification sent (no new matches) to topic '{topic}'")
             except requests.RequestException as exc:
-                logger.info(f"ntfy notification failed: {exc}", file=sys.stderr)
+                logger.info(f"ntfy notification failed: {exc}")
         return
 
     top = new_matches[0]
@@ -411,9 +411,9 @@ def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh", always=
     priority = "high" if top["score"] >= 10 else "default"
     try:
         _ntfy_post(server, topic, title, body, priority=priority, click=click, token=token)
-        logger.info(f"ntfy notification sent to topic '{topic}'", file=sys.stderr)
+        logger.info(f"ntfy notification sent to topic '{topic}'")
     except requests.RequestException as exc:
-        logger.info(f"ntfy notification failed: {exc}", file=sys.stderr)
+        logger.info(f"ntfy notification failed: {exc}")
 
 
 def parse_args():
@@ -466,12 +466,12 @@ def main():
 
     if args.ntfy_test:
         if not args.ntfy_topic:
-            logger.info("--ntfy-test requires --ntfy-topic", file=sys.stderr)
+            logger.info("--ntfy-test requires --ntfy-topic")
             sys.exit(1)
         if ntfy_token:
-            logger.info(f"Using token from {args.ntfy_token_file}", file=sys.stderr)
+            logger.info(f"Using token from {args.ntfy_token_file}")
         else:
-            logger.info("No token found — sending unauthenticated.", file=sys.stderr)
+            logger.info("No token found — sending unauthenticated.")
         send_ntfy_test(args.ntfy_topic, args.ntfy_server, token=ntfy_token)
         return
 
@@ -481,18 +481,14 @@ def main():
     to_process = [u for u in candidates if u not in state]
     logger.info(
         f"{len(candidates)} total candidates across all sources, "
-        f"{len(to_process)} new to check.",
-        file=sys.stderr,
-    )
+        f"{len(to_process)} new to check.")
 
     total = len(to_process)
     new_matches = []
     for i, url in enumerate(to_process, 1):
         logger.info(
             f"\r[{i}/{total}] checking offers... ({len(new_matches)} matches so far)",
-            end="",
-            file=sys.stderr,
-            flush=True,
+            end=""
         )
         module, hint = candidates[url]
         try:
@@ -513,11 +509,10 @@ def main():
                 new_matches.append(result)
                 logger.info(
                     f"\n  match (score {result['score']}, {result['source']}): "
-                    f"{result['title']} @ {result['company']}",
-                    file=sys.stderr,
+                    f"{result['title']} @ {result['company']}"
                 )
         except requests.RequestException as exc:
-            logger.info(f"\nFailed to fetch {url}: {exc}", file=sys.stderr)
+            logger.info(f"\nFailed to fetch {url}: {exc}")
         time.sleep(REQUEST_DELAY_SECONDS)
     if total:
         logger.info(file=sys.stderr)
@@ -529,7 +524,7 @@ def main():
     save_state(state)
 
     new_matches.sort(key=lambda m: m["score"], reverse=True)
-    logger.info(f"Found {len(new_matches)} new matching offer(s).", file=sys.stderr)
+    logger.info(f"Found {len(new_matches)} new matching offer(s).")
     for m in new_matches:
         logger.info(f"  - (score {m['score']}, {m['source']}) {m['title']} @ {m['company']} -> {m['url']}")
 
@@ -542,7 +537,7 @@ def main():
 
     if args.export_md:
         export_markdown(load_matches_store())
-        logger.info(f"Wrote {MD_PATH}", file=sys.stderr)
+        logger.info(f"Wrote {MD_PATH}")
 
 
 if __name__ == "__main__":
