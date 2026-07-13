@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import re
 import sys
 import time
@@ -9,11 +10,15 @@ from pathlib import Path
 
 import requests
 
+
+from sources.log_config import log_config
 from profile import PROFILE
 from sources import bulldogjob, justjoin, nofluffjobs, rocketjobs, solidjobs, theprotocol
 
 # Sources that all expose the same list_candidate_urls(prefilter_keywords,
 # target_employers) -> [url] signature (sitemap + slug prefilter discovery).
+logger = log_config(name=__name__, log_file=f"/var/log/{__name__}/{__name__}.log")
+
 SITEMAP_SOURCES = [justjoin, theprotocol, rocketjobs, solidjobs, bulldogjob]
 
 REQUEST_DELAY_SECONDS = 0.3
@@ -57,22 +62,22 @@ def discover_candidates():
     candidates = {}
 
     for module in SITEMAP_SOURCES:
-        print(f"Discovering candidates on {module.NAME}...", file=sys.stderr)
+        logger.info(f"Discovering candidates on {module.NAME}...", file=sys.stderr)
         try:
             urls = module.list_candidate_urls(
                 PROFILE["slug_prefilter_keywords"], PROFILE["target_employers"]
             )
         except requests.RequestException as exc:
-            print(f"  failed to discover {module.NAME}: {exc}", file=sys.stderr)
+            logger.info(f"  failed to discover {module.NAME}: {exc}", file=sys.stderr)
             continue
         for url in urls:
             candidates.setdefault(url, (module, None))
 
-    print("Discovering candidates on nofluffjobs.com...", file=sys.stderr)
+    logger.info("Discovering candidates on nofluffjobs.com...", file=sys.stderr)
     try:
         nfj_hints = nofluffjobs.list_candidate_urls(PROFILE["nofluffjobs_categories"])
     except requests.RequestException as exc:
-        print(f"  failed to discover nofluffjobs: {exc}", file=sys.stderr)
+        logger.info(f"  failed to discover nofluffjobs: {exc}", file=sys.stderr)
         nfj_hints = {}
     for url, hint in nfj_hints.items():
         candidates.setdefault(url, (nofluffjobs, hint))
@@ -368,9 +373,9 @@ def _ntfy_post(server, topic, title, body, priority="default", click=None, token
 def send_ntfy_test(topic, server="https://ntfy.sh", token=None):
     try:
         _ntfy_post(server, topic, "job-scraper: test notification", "ntfy is working correctly.", token=token)
-        print(f"Test notification sent to {server}/{topic}")
+        logger.info(f"Test notification sent to {server}/{topic}")
     except requests.RequestException as exc:
-        print(f"ntfy test failed: {exc}", file=sys.stderr)
+        logger.info(f"ntfy test failed: {exc}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -379,9 +384,9 @@ def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh", always=
         if always:
             try:
                 _ntfy_post(server, topic, "job-scraper: no new matches", "Scrape complete — nothing new this run.", priority="min", token=token)
-                print(f"ntfy notification sent (no new matches) to topic '{topic}'", file=sys.stderr)
+                logger.info(f"ntfy notification sent (no new matches) to topic '{topic}'", file=sys.stderr)
             except requests.RequestException as exc:
-                print(f"ntfy notification failed: {exc}", file=sys.stderr)
+                logger.info(f"ntfy notification failed: {exc}", file=sys.stderr)
         return
 
     top = new_matches[0]
@@ -404,9 +409,9 @@ def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh", always=
     priority = "high" if top["score"] >= 10 else "default"
     try:
         _ntfy_post(server, topic, title, body, priority=priority, click=click, token=token)
-        print(f"ntfy notification sent to topic '{topic}'", file=sys.stderr)
+        logger.info(f"ntfy notification sent to topic '{topic}'", file=sys.stderr)
     except requests.RequestException as exc:
-        print(f"ntfy notification failed: {exc}", file=sys.stderr)
+        logger.info(f"ntfy notification failed: {exc}", file=sys.stderr)
 
 
 def parse_args():
@@ -459,12 +464,12 @@ def main():
 
     if args.ntfy_test:
         if not args.ntfy_topic:
-            print("--ntfy-test requires --ntfy-topic", file=sys.stderr)
+            logger.info("--ntfy-test requires --ntfy-topic", file=sys.stderr)
             sys.exit(1)
         if ntfy_token:
-            print(f"Using token from {args.ntfy_token_file}", file=sys.stderr)
+            logger.info(f"Using token from {args.ntfy_token_file}", file=sys.stderr)
         else:
-            print("No token found — sending unauthenticated.", file=sys.stderr)
+            logger.info("No token found — sending unauthenticated.", file=sys.stderr)
         send_ntfy_test(args.ntfy_topic, args.ntfy_server, token=ntfy_token)
         return
 
@@ -472,7 +477,7 @@ def main():
 
     candidates = discover_candidates()
     to_process = [u for u in candidates if u not in state]
-    print(
+    logger.info(
         f"{len(candidates)} total candidates across all sources, "
         f"{len(to_process)} new to check.",
         file=sys.stderr,
@@ -481,7 +486,7 @@ def main():
     total = len(to_process)
     new_matches = []
     for i, url in enumerate(to_process, 1):
-        print(
+        logger.info(
             f"\r[{i}/{total}] checking offers... ({len(new_matches)} matches so far)",
             end="",
             file=sys.stderr,
@@ -504,16 +509,16 @@ def main():
             }
             if result["is_match"]:
                 new_matches.append(result)
-                print(
+                logger.info(
                     f"\n  match (score {result['score']}, {result['source']}): "
                     f"{result['title']} @ {result['company']}",
                     file=sys.stderr,
                 )
         except requests.RequestException as exc:
-            print(f"\nFailed to fetch {url}: {exc}", file=sys.stderr)
+            logger.info(f"\nFailed to fetch {url}: {exc}", file=sys.stderr)
         time.sleep(REQUEST_DELAY_SECONDS)
     if total:
-        print(file=sys.stderr)
+        logger.info(file=sys.stderr)
 
     new_matches = dedup_new_matches(new_matches)
 
@@ -522,9 +527,9 @@ def main():
     save_state(state)
 
     new_matches.sort(key=lambda m: m["score"], reverse=True)
-    print(f"Found {len(new_matches)} new matching offer(s).", file=sys.stderr)
+    logger.info(f"Found {len(new_matches)} new matching offer(s).", file=sys.stderr)
     for m in new_matches:
-        print(f"  - (score {m['score']}, {m['source']}) {m['title']} @ {m['company']} -> {m['url']}")
+        logger.info(f"  - (score {m['score']}, {m['source']}) {m['title']} @ {m['company']} -> {m['url']}")
 
     if args.ntfy_topic:
         send_ntfy_notification(args.ntfy_topic, new_matches, args.ntfy_server, always=args.ntfy_always, token=ntfy_token)
@@ -535,7 +540,7 @@ def main():
 
     if args.export_md:
         export_markdown(load_matches_store())
-        print(f"Wrote {MD_PATH}", file=sys.stderr)
+        logger.info(f"Wrote {MD_PATH}", file=sys.stderr)
 
 
 if __name__ == "__main__":
