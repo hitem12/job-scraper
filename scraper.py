@@ -70,7 +70,7 @@ def discover_candidates():
                 PROFILE["slug_prefilter_keywords"], PROFILE["target_employers"]
             )
         except requests.RequestException as exc:
-            logger.info(f"  failed to discover {module.NAME}: {exc}")
+            logger.error(f"  failed to discover {module.NAME}: {exc}")
             continue
         for url in urls:
             candidates.setdefault(url, (module, None))
@@ -79,7 +79,7 @@ def discover_candidates():
     try:
         nfj_hints = nofluffjobs.list_candidate_urls(PROFILE["nofluffjobs_categories"])
     except requests.RequestException as exc:
-        logger.info(f"  failed to discover nofluffjobs: {exc}")
+        logger.error(f"  failed to discover nofluffjobs: {exc}")
         nfj_hints = {}
     for url, hint in nfj_hints.items():
         candidates.setdefault(url, (nofluffjobs, hint))
@@ -377,7 +377,7 @@ def send_ntfy_test(topic, server="https://ntfy.sh", token=None):
         _ntfy_post(server, topic, "job-scraper: test notification", "ntfy is working correctly.", token=token)
         logger.info(f"Test notification sent to {server}/{topic}")
     except requests.RequestException as exc:
-        logger.info(f"ntfy test failed: {exc}")
+        logger.error(f"ntfy test failed: {exc}")
         sys.exit(1)
 
 
@@ -388,7 +388,7 @@ def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh", always=
                 _ntfy_post(server, topic, "job-scraper: no new matches", "Scrape complete — nothing new this run.", priority="min", token=token)
                 logger.info(f"ntfy notification sent (no new matches) to topic '{topic}'")
             except requests.RequestException as exc:
-                logger.info(f"ntfy notification failed: {exc}")
+                logger.error(f"ntfy notification failed: {exc}")
         return
 
     top = new_matches[0]
@@ -413,7 +413,7 @@ def send_ntfy_notification(topic, new_matches, server="https://ntfy.sh", always=
         _ntfy_post(server, topic, title, body, priority=priority, click=click, token=token)
         logger.info(f"ntfy notification sent to topic '{topic}'")
     except requests.RequestException as exc:
-        logger.info(f"ntfy notification failed: {exc}")
+        logger.error(f"ntfy notification failed: {exc}")
 
 
 def parse_args():
@@ -466,12 +466,12 @@ def main():
 
     if args.ntfy_test:
         if not args.ntfy_topic:
-            logger.info("--ntfy-test requires --ntfy-topic")
+            logger.error("--ntfy-test requires --ntfy-topic")
             sys.exit(1)
         if ntfy_token:
-            logger.info(f"Using token from {args.ntfy_token_file}")
+            logger.debug(f"Using token from {args.ntfy_token_file}")
         else:
-            logger.info("No token found — sending unauthenticated.")
+            logger.warning("No token found — sending unauthenticated.")
         send_ntfy_test(args.ntfy_topic, args.ntfy_server, token=ntfy_token)
         return
 
@@ -483,13 +483,8 @@ def main():
         f"{len(candidates)} total candidates across all sources, "
         f"{len(to_process)} new to check.")
 
-    total = len(to_process)
     new_matches = []
-    for i, url in enumerate(to_process, 1):
-        logger.info(
-            f"\r[{i}/{total}] checking offers... ({len(new_matches)} matches so far)",
-            end=""
-        )
+    for url in to_process:
         module, hint = candidates[url]
         try:
             normalized = module.fetch_offer(url, hint)
@@ -508,14 +503,12 @@ def main():
             if result["is_match"]:
                 new_matches.append(result)
                 logger.info(
-                    f"\n  match (score {result['score']}, {result['source']}): "
+                    f"match (score {result['score']}, {result['source']}): "
                     f"{result['title']} @ {result['company']}"
                 )
         except requests.RequestException as exc:
-            logger.info(f"\nFailed to fetch {url}: {exc}")
+            logger.error(f"Failed to fetch {url}: {exc}")
         time.sleep(REQUEST_DELAY_SECONDS)
-    if total:
-        logger.info(file=sys.stderr)
 
     new_matches = dedup_new_matches(new_matches)
 
