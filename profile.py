@@ -23,9 +23,10 @@ PROFILE = {
         "multithreading": 2,
         "lock-free": 2,
         "nats": 2,
+        "llm": 3,
         # Generic stack: present on plenty of unrelated postings too, so it
         # barely moves the needle on its own.
-        "c++": 1,
+        "c++": 3,
         "python": 1,
         "docker": 1,
         "cmake": 1,

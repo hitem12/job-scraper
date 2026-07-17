@@ -1,4 +1,5 @@
 import logging
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -25,9 +26,24 @@ def log_config(name: str = "myapp",
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
 
-    file_handler = RotatingFileHandler(
-        log_file, maxBytes=max_bytes, backupCount=backup_count
-    )
+    log_path = Path(log_file)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_path, maxBytes=max_bytes, backupCount=backup_count
+        )
+    except OSError as exc:
+        # e.g. running locally without the /var/log/<name> dir the installer
+        # creates in production — fall back rather than crashing on import.
+        fallback = Path.home() / ".local" / "state" / name / log_path.name
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        print(
+            f"Warning: cannot write to {log_path} ({exc}); logging to {fallback} instead.",
+            file=sys.stderr,
+        )
+        file_handler = RotatingFileHandler(
+            fallback, maxBytes=max_bytes, backupCount=backup_count
+        )
     file_handler.setFormatter(fmt)
     logger.addHandler(file_handler)
 
