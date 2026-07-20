@@ -76,8 +76,9 @@ PAGE = """<!doctype html>
   .actions button.active { color: #fff; border-color: transparent; }
   .actions button[data-status="interesting"].active { background: #2a9d4a; }
   .actions button[data-status="cv_sent"].active { background: #3a6df0; }
+  .actions button[data-status="expired"].active { background: #6a6a6a; }
   .actions button[data-status="not_for_me"].active { background: #b03030; }
-  .row.status-not_for_me { opacity: 0.45; }
+  .row.status-not_for_me, .row.status-expired { opacity: 0.45; }
   .nav { margin-bottom: 1rem; }
   .nav a { color: #7fb0ff; margin-right: 1.2rem; text-decoration: none; font-size: 0.85rem; }
   .nav a:hover { text-decoration: underline; }
@@ -104,8 +105,8 @@ PAGE = """<!doctype html>
 let allMatches = {};
 let currentFilter = 'all';
 let currentSkillFilter = 'all';
-const FILTERS = ['all', 'new', 'interesting', 'cv_sent', 'not_for_me'];
-const LABELS = {all: 'All', new: 'New', interesting: 'Interesting', cv_sent: 'CV sent', not_for_me: 'Not for me'};
+const FILTERS = ['all', 'new', 'interesting', 'cv_sent', 'expired', 'not_for_me'];
+const LABELS = {all: 'All', new: 'New', interesting: 'Interesting', cv_sent: 'CV sent', expired: 'Expired', not_for_me: 'Not for me'};
 
 // URLs already shown to the user in a previous visit/poll -- anything not
 // in this set when rendered gets a "NEW" badge. The set itself is frozen
@@ -185,7 +186,7 @@ function render() {
       <td class="stored">${formatStored(m.first_seen)}</td>
       <td><input class="notes-input" data-url="${encodeURIComponent(url)}" value="${escapeHtml(m.notes || '')}" placeholder="Add a note..."></td>
       <td class="actions">
-        ${['interesting', 'cv_sent', 'not_for_me'].map(s =>
+        ${['interesting', 'cv_sent', 'expired', 'not_for_me'].map(s =>
           `<button data-url="${encodeURIComponent(url)}" data-status="${s}" class="${m.status === s ? 'active' : ''}">${LABELS[s]}</button>`
         ).join('')}
         ${m.cv_sent_at ? `<div class="meta">CV sent: ${m.cv_sent_at.replace('T', ' ')}</div>` : ''}

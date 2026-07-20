@@ -31,11 +31,12 @@ LOG_PATH = BASE_DIR / "matches.log"
 MATCHES_STORE_PATH = BASE_DIR / "data" / "matches.json"
 MD_PATH = BASE_DIR / "matches.md"
 
-STATUSES = ("new", "interesting", "cv_sent", "not_for_me")
+STATUSES = ("new", "interesting", "cv_sent", "expired", "not_for_me")
 STATUS_LABELS = {
     "new": "New",
     "interesting": "Interesting",
     "cv_sent": "CV sent",
+    "expired": "Expired",
     "not_for_me": "Not for me",
 }
 
@@ -225,7 +226,7 @@ def dedup_new_matches(matches):
     return deduped
 
 
-STATUS_PRIORITY = {"cv_sent": 3, "interesting": 2, "not_for_me": 1, "new": 0}
+STATUS_PRIORITY = {"cv_sent": 4, "interesting": 3, "expired": 2, "not_for_me": 1, "new": 0}
 
 
 def dedup_store(store):
