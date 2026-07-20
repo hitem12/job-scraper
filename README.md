@@ -68,13 +68,17 @@ python mcp_server.py --transport sse --port 8080
 
 Tools: `list_matches`, `get_match`, `set_match_status`, `set_match_notes`, `mark_match_opened`, `list_skills`, `skill_occurrence_stats`.
 
-If installed via `install.sh`, use the `job-scraper-mcp` wrapper it creates instead (runs the installed venv against the same `/opt/job-scraper/data/matches.json` the cron scraper and web UI use):
+If installed via `install.sh`, two ways to reach it are set up automatically:
+
+- **On demand (stdio)** — `job-scraper-mcp`, a wrapper that runs the installed venv against the same `/opt/job-scraper/data/matches.json` the cron scraper and web UI use. Point a local MCP client (Claude Desktop, Claude Code) at this command and it spawns/stops the server per session.
+- **Always on (streamable-http)** — the `job-scraper-mcp` OpenRC service, listening on `http://127.0.0.1:8766` (configurable via `MCP_PORT` in `install.sh`). Useful for MCP clients that connect over HTTP instead of spawning a subprocess.
 
 ```sh
-/usr/local/bin/job-scraper-mcp
+/usr/local/bin/job-scraper-mcp                # on-demand, stdio
+rc-service job-scraper-mcp status              # check the always-on service
 ```
 
-Example Claude Desktop / Claude Code config entry:
+Example Claude Desktop / Claude Code config entry (stdio):
 
 ```json
 {

@@ -19,6 +19,9 @@ LOG_ROTATE_ENABLE=0
 NTFY_SERVER="http://[::1]:2345"  # e.g. "https://ntfy.sh"
 NTFY_TOPIC="jobs"                  # e.g. "job-alerts"
 
+# Port for the always-on MCP service (streamable-http transport)
+MCP_PORT="8766"
+
 # Python deps — keep in sync with pyproject.toml [project.dependencies]
 PYTHON_DEPS="requests>=2.31
 mcp>=1.2"
@@ -37,6 +40,8 @@ WEBUI_WRAPPER="/usr/local/bin/${APP_NAME}-ui"
 MCP_WRAPPER="/usr/local/bin/${APP_NAME}-mcp"
 WEBUI_SERVICE="${APP_NAME}-ui"
 WEBUI_INITD="/etc/init.d/${WEBUI_SERVICE}"
+MCP_SERVICE="${APP_NAME}-mcp"
+MCP_INITD="/etc/init.d/${MCP_SERVICE}"
 LOCK_FILE="/run/${APP_NAME}/cron.lock"
 RUNTIME_DIR="/run/${APP_NAME}"
 LOCAL_START="/etc/local.d/${APP_NAME}.start"
@@ -389,7 +394,42 @@ EOF
     printf '      rc-service %s start\n' "${WEBUI_SERVICE}"
   fi
 
-  # ── 10. Logrotate ─────────────────────────────────────────────────
+  # ── 10. MCP OpenRC service ───────────────────────────────────────
+  step "Installing OpenRC service → ${MCP_INITD}"
+  cat > "${MCP_INITD}" <<EOF
+#!/sbin/openrc-run
+description="job-scraper MCP server"
+
+command="${VENV_DIR}/bin/python"
+command_args="${APP_DIR}/mcp_server.py --transport streamable-http --host 127.0.0.1 --port ${MCP_PORT}"
+command_user="${APP_USER}:${APP_USER}"
+command_background=true
+pidfile="/run/${MCP_SERVICE}.pid"
+output_log="${LOG_DIR}/mcp.log"
+error_log="${LOG_DIR}/mcp.log"
+directory="${APP_DIR}"
+
+depend() {
+    need net
+    after logger
+}
+EOF
+  chmod 755 "${MCP_INITD}"
+  chown root:root "${MCP_INITD}"
+
+  if command -v rc-update >/dev/null 2>&1; then
+    rc-update add "${MCP_SERVICE}" default 2>/dev/null || true
+    ok "Service enabled in default runlevel."
+    rc-service "${MCP_SERVICE}" start \
+      && ok "${MCP_SERVICE} started." \
+      || warn "Failed to start ${MCP_SERVICE} — check logs: tail -f ${LOG_DIR}/mcp.log"
+  else
+    warn "rc-update not found — enable the service manually:"
+    printf '      rc-update add %s default\n' "${MCP_SERVICE}"
+    printf '      rc-service %s start\n' "${MCP_SERVICE}"
+  fi
+
+  # ── 11. Logrotate ─────────────────────────────────────────────────
   if [ "${LOG_ROTATE_ENABLE}" -eq 1 ]; then
   step "Configuring log rotation"
   if command -v logrotate >/dev/null 2>&1; then
@@ -410,7 +450,7 @@ EOF
     warn "logrotate not found — adding a weekly truncate line to the cron job."
   fi
   fi
-  # ── 11. Cron job ───────────────────────────────────────────────────
+  # ── 12. Cron job ───────────────────────────────────────────────────
   step "Installing cron job"
 
   [ -n "${CRON_FILE}" ] || die "No cron directory (/etc/crontabs or /etc/cron.d) found. Install crond first."
@@ -467,14 +507,14 @@ EOF
       ;;
   esac
 
-  # ── 12. Smoke test — import check ─────────────────────────────────
+  # ── 13. Smoke test — import check ─────────────────────────────────
   step "Running import smoke test"
   ${RUNAS} "${APP_USER}" -c \
     "cd ${APP_DIR} && ${VENV_DIR}/bin/python -c 'import scraper, profile, sources'" \
     && ok "Imports OK." \
     || die "Import test failed — check virtualenv and source files above."
 
-  # ── 13. First manual run ───────────────────────────────────────────
+  # ── 14. First manual run ───────────────────────────────────────────
   step "Running application once as '${APP_USER}'"
   printf '    (this will discover and score live offers — may take several minutes)\n'
   ${RUNAS} "${APP_USER}" -c \
@@ -482,7 +522,7 @@ EOF
     && ok "First run completed successfully." \
     || warn "First run exited non-zero — check output above."
 
-  # ── 14. Check cron daemon ──────────────────────────────────────────
+  # ── 15. Check cron daemon ──────────────────────────────────────────
   step "Checking cron daemon"
   if command -v rc-service >/dev/null 2>&1; then
     if rc-service crond status >/dev/null 2>&1; then
@@ -509,6 +549,7 @@ EOF
   printf '  %-28s %s:%s  %s\n' "${WEBUI_WRAPPER}"         "root"        "root"        "755"
   printf '  %-28s %s:%s  %s\n' "${MCP_WRAPPER}"           "root"        "root"        "755"
   printf '  %-28s %s:%s  %s\n' "${WEBUI_INITD}"           "root"        "root"        "755"
+  printf '  %-28s %s:%s  %s\n' "${MCP_INITD}"             "root"        "root"        "755"
   printf '  %-28s %s:%s  %s\n' "${CRON_FILE}"             "root"        "root"        "600/644"
   printf '\n'
   printf '  Cron line:\n'
@@ -519,7 +560,8 @@ EOF
   printf '\n'
   printf '  Scan now:    %s\n' "${WRAPPER}"
   printf '  Web UI:      http://127.0.0.1:8765  (rc-service %s status)\n' "${WEBUI_SERVICE}"
-  printf '  MCP server:  %s  (stdio; point an MCP client at this command)\n' "${MCP_WRAPPER}"
+  printf '  MCP service: http://127.0.0.1:%s  (rc-service %s status)\n' "${MCP_PORT}" "${MCP_SERVICE}"
+  printf '  MCP on-demand (stdio): %s\n' "${MCP_WRAPPER}"
   printf '  Watch logs:  tail -f %s/cron.log\n' "${LOG_DIR}"
 
   if [ "${_token_created}" -eq 1 ]; then
@@ -587,6 +629,17 @@ uninstall() {
     rc-service "${WEBUI_SERVICE}" stop 2>/dev/null || true
     rc-update del "${WEBUI_SERVICE}" 2>/dev/null || true
     rm -f "${WEBUI_INITD}"
+    ok "Service removed."
+  else
+    ok "Init script not found — skipping."
+  fi
+
+  # MCP service
+  step "Stopping and removing OpenRC service '${MCP_SERVICE}'"
+  if [ -f "${MCP_INITD}" ]; then
+    rc-service "${MCP_SERVICE}" stop 2>/dev/null || true
+    rc-update del "${MCP_SERVICE}" 2>/dev/null || true
+    rm -f "${MCP_INITD}"
     ok "Service removed."
   else
     ok "Init script not found — skipping."
@@ -688,6 +741,7 @@ Configuration (edit at the top of this script before running):
   CRON_SCHEDULE   cron time expression                   [${CRON_SCHEDULE}]
   NTFY_TOPIC      ntfy topic for push notifications      [${NTFY_TOPIC:-<unset>}]
   NTFY_SERVER     ntfy server base URL                   [${NTFY_SERVER}]
+  MCP_PORT        port for the always-on MCP service      [${MCP_PORT}]
   PYTHON_DEPS     pip/uv dependencies (newline-separated) [${_deps_display}]
 
 Key paths:
@@ -697,11 +751,12 @@ Key paths:
   ${CONF_DIR}/ntfy-token   ntfy auth token (chmod 600, fill in manually)
   ${WRAPPER}        run a scrape manually
   ${WEBUI_WRAPPER}     open the match browser UI
-  ${MCP_WRAPPER}    run the MCP server (stdio)
+  ${MCP_WRAPPER}    run the MCP server on demand (stdio)
 
 After install:
   Scan now:    ${WRAPPER}
   Web UI:      ${WEBUI_WRAPPER}
+  MCP service: rc-service ${MCP_SERVICE} status  (http://127.0.0.1:${MCP_PORT})
   Watch logs:  tail -f ${LOG_DIR}/cron.log
 EOF
 }
