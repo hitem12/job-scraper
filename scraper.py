@@ -195,6 +195,46 @@ def save_matches_store(store):
     MATCHES_STORE_PATH.write_text(json.dumps(store, indent=2))
 
 
+class MatchNotFound(KeyError):
+    pass
+
+
+def update_match_status(url, status):
+    """Set a match's status, load->mutate->save. Shared by webui.py and
+    mcp_server.py so the cv_sent_at side effect can't drift between them."""
+    if status not in STATUSES:
+        raise ValueError(f"invalid status: {status}")
+    store = load_matches_store()
+    if url not in store:
+        raise MatchNotFound(url)
+    old_status = store[url].get("status", "new")
+    store[url]["status"] = status
+    if status == "cv_sent":
+        store[url]["cv_sent_at"] = datetime.now().isoformat(timespec="seconds")
+    elif old_status == "cv_sent" and status == "new":
+        store[url]["cv_sent_at"] = None
+    save_matches_store(store)
+    return store[url]
+
+
+def update_match_notes(url, notes):
+    store = load_matches_store()
+    if url not in store:
+        raise MatchNotFound(url)
+    store[url]["notes"] = notes
+    save_matches_store(store)
+    return store[url]
+
+
+def record_match_click(url):
+    store = load_matches_store()
+    if url not in store:
+        raise MatchNotFound(url)
+    store[url]["click_count"] = store[url].get("click_count", 0) + 1
+    save_matches_store(store)
+    return store[url]
+
+
 def dedup_new_matches(matches):
     """Collapse same-run matches that are the same job posted under multiple
     URLs (e.g. one ad per city), so the log/notification/store each only see

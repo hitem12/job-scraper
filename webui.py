@@ -4,7 +4,6 @@ import sys
 import threading
 import time
 import webbrowser
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import scraper
@@ -632,38 +631,30 @@ class Handler(BaseHTTPRequestHandler):
             if status not in scraper.STATUSES:
                 self._send_json({"error": "invalid status"}, status=400)
                 return
-            store = scraper.load_matches_store()
-            if url not in store:
+            try:
+                m = scraper.update_match_status(url, status)
+            except scraper.MatchNotFound:
                 self._send_json({"error": "unknown url"}, status=404)
                 return
-            old_status = store[url].get("status", "new")
-            store[url]["status"] = status
-            if status == "cv_sent":
-                store[url]["cv_sent_at"] = datetime.now().isoformat(timespec="seconds")
-            elif old_status == "cv_sent" and status == "new":
-                store[url]["cv_sent_at"] = None
-            scraper.save_matches_store(store)
-            self._send_json({"ok": True, "cv_sent_at": store[url].get("cv_sent_at")})
+            self._send_json({"ok": True, "cv_sent_at": m.get("cv_sent_at")})
         elif self.path == "/api/notes":
             payload = self._read_json()
             url, notes = payload.get("url"), payload.get("notes", "")
-            store = scraper.load_matches_store()
-            if url not in store:
+            try:
+                scraper.update_match_notes(url, notes)
+            except scraper.MatchNotFound:
                 self._send_json({"error": "unknown url"}, status=404)
                 return
-            store[url]["notes"] = notes
-            scraper.save_matches_store(store)
             self._send_json({"ok": True})
         elif self.path == "/api/click":
             payload = self._read_json()
             url = payload.get("url")
-            store = scraper.load_matches_store()
-            if url not in store:
+            try:
+                m = scraper.record_match_click(url)
+            except scraper.MatchNotFound:
                 self._send_json({"error": "unknown url"}, status=404)
                 return
-            store[url]["click_count"] = store[url].get("click_count", 0) + 1
-            scraper.save_matches_store(store)
-            self._send_json({"ok": True, "click_count": store[url]["click_count"]})
+            self._send_json({"ok": True, "click_count": m["click_count"]})
         else:
             self.send_response(404)
             self.end_headers()

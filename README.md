@@ -23,7 +23,8 @@ Personal job offer scraper and matcher. Discovers offers across multiple Polish 
 ## Requirements
 
 - Python 3.10+
-- `requests` (only runtime dependency)
+- `requests` (scraper)
+- `mcp` (only needed to run `mcp_server.py`)
 - `uv` (optional, used by `install.sh` when available)
 
 ## Quick start
@@ -54,7 +55,36 @@ python webui.py          # opens http://localhost:8080
 python webui.py --port 9000
 ```
 
-Features: tab per status (New / Interesting / CV sent / Not for me), inline notes, click tracking, one-click status transitions.
+Features: tab per status (New / Interesting / CV sent / Expired / Not for me), inline notes, click tracking, one-click status transitions.
+
+## MCP server
+
+`mcp_server.py` exposes the same `data/matches.json` store as the web UI, as MCP tools, so an MCP client (Claude Desktop, Claude Code, etc.) can browse and triage matches directly.
+
+```sh
+python mcp_server.py                 # stdio transport, for use as a subprocess MCP server
+python mcp_server.py --transport sse --port 8080
+```
+
+Tools: `list_matches`, `get_match`, `set_match_status`, `set_match_notes`, `mark_match_opened`, `list_skills`, `skill_occurrence_stats`.
+
+If installed via `install.sh`, use the `job-scraper-mcp` wrapper it creates instead (runs the installed venv against the same `/opt/job-scraper/data/matches.json` the cron scraper and web UI use):
+
+```sh
+/usr/local/bin/job-scraper-mcp
+```
+
+Example Claude Desktop / Claude Code config entry:
+
+```json
+{
+  "mcpServers": {
+    "job-scraper": {
+      "command": "/usr/local/bin/job-scraper-mcp"
+    }
+  }
+}
+```
 
 ## Profile
 

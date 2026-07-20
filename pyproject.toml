@@ -5,4 +5,5 @@ description = "Personal job offer scraper and matcher for justjoin.it, nofluffjo
 requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31",
+    "mcp>=1.2",
 ]

@@ -20,7 +20,8 @@ NTFY_SERVER="http://[::1]:2345"  # e.g. "https://ntfy.sh"
 NTFY_TOPIC="jobs"                  # e.g. "job-alerts"
 
 # Python deps — keep in sync with pyproject.toml [project.dependencies]
-PYTHON_DEPS="requests>=2.31"
+PYTHON_DEPS="requests>=2.31
+mcp>=1.2"
 
 # ══════════════════════════════════════════════════════════════════════
 # DERIVED PATHS — do not edit
@@ -33,6 +34,7 @@ CONF_DIR="/etc/${APP_NAME}"
 TOKEN_FILE="${CONF_DIR}/ntfy-token"
 WRAPPER="/usr/local/bin/${APP_NAME}-scan"
 WEBUI_WRAPPER="/usr/local/bin/${APP_NAME}-ui"
+MCP_WRAPPER="/usr/local/bin/${APP_NAME}-mcp"
 WEBUI_SERVICE="${APP_NAME}-ui"
 WEBUI_INITD="/etc/init.d/${WEBUI_SERVICE}"
 LOCK_FILE="/run/${APP_NAME}/cron.lock"
@@ -296,6 +298,7 @@ EOF
 ${PYTHON_DEPS}
 PYREQS
   chmod 644 "${_reqs}"
+  _reqs_display=$(printf '%s' "${PYTHON_DEPS}" | tr '\n' ',' | sed 's/,/, /g; s/, $//')
 
   if [ "${HAS_UV}" -eq 1 ]; then
     step "Setting up Python virtualenv → ${VENV_DIR} (via uv)"
@@ -306,7 +309,7 @@ PYREQS
       ok "Virtualenv already exists."
     fi
 
-    step "Installing Python dependencies: ${PYTHON_DEPS} (via uv)"
+    step "Installing Python dependencies: ${_reqs_display} (via uv)"
     ${RUNAS} "${APP_USER}" -c \
       "UV_NO_CACHE=1 uv pip install --quiet --python '${VENV_DIR}/bin/python' -r '${_reqs}'"
   else
@@ -319,7 +322,7 @@ PYREQS
       ok "Virtualenv already exists."
     fi
 
-    step "Installing Python dependencies: ${PYTHON_DEPS}"
+    step "Installing Python dependencies: ${_reqs_display}"
     ${RUNAS} "${APP_USER}" -c \
       "${VENV_DIR}/bin/pip install --quiet --upgrade pip && \
        ${VENV_DIR}/bin/pip install --quiet -r '${_reqs}'"
@@ -328,7 +331,7 @@ PYREQS
   ok "Dependencies installed."
 
   # ── 8. Wrapper scripts ─────────────────────────────────────────────
-  step "Creating wrappers → ${WRAPPER}, ${WEBUI_WRAPPER}"
+  step "Creating wrappers → ${WRAPPER}, ${WEBUI_WRAPPER}, ${MCP_WRAPPER}"
   cat > "${WRAPPER}" <<EOF
 #!/bin/sh
 exec ${VENV_DIR}/bin/python ${APP_DIR}/${APP_ENTRY} "\$@"
@@ -342,6 +345,13 @@ exec ${VENV_DIR}/bin/python ${APP_DIR}/webui.py "\$@"
 EOF
   chown root:root "${WEBUI_WRAPPER}"
   chmod 755 "${WEBUI_WRAPPER}"
+
+  cat > "${MCP_WRAPPER}" <<EOF
+#!/bin/sh
+exec ${VENV_DIR}/bin/python ${APP_DIR}/mcp_server.py "\$@"
+EOF
+  chown root:root "${MCP_WRAPPER}"
+  chmod 755 "${MCP_WRAPPER}"
   ok "Wrappers created."
 
   # ── 9. Web UI OpenRC service ───────────────────────────────────────
@@ -497,6 +507,7 @@ EOF
   printf '  %-28s %s:%s  %s\n' "${LOG_DIR}/"              "${APP_USER}" "${APP_USER}" "750"
   printf '  %-28s %s:%s  %s\n' "${WRAPPER}"               "root"        "root"        "755"
   printf '  %-28s %s:%s  %s\n' "${WEBUI_WRAPPER}"         "root"        "root"        "755"
+  printf '  %-28s %s:%s  %s\n' "${MCP_WRAPPER}"           "root"        "root"        "755"
   printf '  %-28s %s:%s  %s\n' "${WEBUI_INITD}"           "root"        "root"        "755"
   printf '  %-28s %s:%s  %s\n' "${CRON_FILE}"             "root"        "root"        "600/644"
   printf '\n'
@@ -508,6 +519,7 @@ EOF
   printf '\n'
   printf '  Scan now:    %s\n' "${WRAPPER}"
   printf '  Web UI:      http://127.0.0.1:8765  (rc-service %s status)\n' "${WEBUI_SERVICE}"
+  printf '  MCP server:  %s  (stdio; point an MCP client at this command)\n' "${MCP_WRAPPER}"
   printf '  Watch logs:  tail -f %s/cron.log\n' "${LOG_DIR}"
 
   if [ "${_token_created}" -eq 1 ]; then
@@ -582,7 +594,7 @@ uninstall() {
 
   # Wrappers
   step "Removing wrappers"
-  rm -f "${WRAPPER}" "${WEBUI_WRAPPER}"
+  rm -f "${WRAPPER}" "${WEBUI_WRAPPER}" "${MCP_WRAPPER}"
   ok "Done."
 
   # Logs
@@ -643,6 +655,8 @@ uninstall() {
 # ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════
 usage() {
+  local _deps_display
+  _deps_display=$(printf '%s' "${PYTHON_DEPS}" | tr '\n' ',' | sed 's/,/, /g; s/, $//')
   cat <<EOF
 Usage: $(basename "$0") [COMMAND]
 
@@ -674,7 +688,7 @@ Configuration (edit at the top of this script before running):
   CRON_SCHEDULE   cron time expression                   [${CRON_SCHEDULE}]
   NTFY_TOPIC      ntfy topic for push notifications      [${NTFY_TOPIC:-<unset>}]
   NTFY_SERVER     ntfy server base URL                   [${NTFY_SERVER}]
-  PYTHON_DEPS     pip/uv dependencies (space-separated)  [${PYTHON_DEPS}]
+  PYTHON_DEPS     pip/uv dependencies (newline-separated) [${_deps_display}]
 
 Key paths:
   ${APP_DIR}/          application code and virtualenv
@@ -683,6 +697,7 @@ Key paths:
   ${CONF_DIR}/ntfy-token   ntfy auth token (chmod 600, fill in manually)
   ${WRAPPER}        run a scrape manually
   ${WEBUI_WRAPPER}     open the match browser UI
+  ${MCP_WRAPPER}    run the MCP server (stdio)
 
 After install:
   Scan now:    ${WRAPPER}
