@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 import threading
 import time
 import webbrowser
@@ -7,6 +8,10 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import scraper
+
+# Errors that just mean the client hung up mid-response (closed tab,
+# navigated away) -- expected under normal use, not worth a traceback.
+DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
 # ── SSE live-update machinery ─────────────────────────────────────────────────
 _sse_clients: list = []
@@ -666,6 +671,14 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        exc_type = sys.exc_info()[0]
+        if exc_type is not None and issubclass(exc_type, DISCONNECT_ERRORS):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8765)
@@ -675,7 +688,7 @@ def main():
     watcher = threading.Thread(target=_watch_matches_file, daemon=True)
     watcher.start()
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = Server(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{args.port}/"
     print(f"Serving job match browser at {url} (Ctrl+C to stop)")
     if not args.no_browser:
