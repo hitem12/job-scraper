@@ -71,12 +71,17 @@ Tools: `list_matches`, `get_match`, `set_match_status`, `set_match_notes`, `mark
 If installed via `install.sh`, two ways to reach it are set up automatically:
 
 - **On demand (stdio)** — `job-scraper-mcp`, a wrapper that runs the installed venv against the same `/opt/job-scraper/data/matches.json` the cron scraper and web UI use. Point a local MCP client (Claude Desktop, Claude Code) at this command and it spawns/stops the server per session.
-- **Always on (streamable-http)** — the `job-scraper-mcp` OpenRC service, listening on `http://127.0.0.1:8766` (configurable via `MCP_PORT` in `install.sh`). Useful for MCP clients that connect over HTTP instead of spawning a subprocess.
+- **Always on (streamable-http)** — the `job-scraper-mcp` OpenRC service, listening on `http://127.0.0.1:8766` by default (`MCP_HOST` / `MCP_PORT` in `install.sh`). Useful for MCP clients that connect over HTTP instead of spawning a subprocess.
 
 ```sh
 /usr/local/bin/job-scraper-mcp                # on-demand, stdio
 rc-service job-scraper-mcp status              # check the always-on service
 ```
+
+**Connecting from another machine**: `MCP_HOST` defaults to `127.0.0.1`, so the service is unreachable from anywhere but the box itself — that's the expected cause if a remote client can't connect. Either:
+
+- SSH-tunnel instead of exposing the port: `ssh -L 8766:127.0.0.1:8766 user@host`, then point the client at `http://127.0.0.1:8766` locally, or
+- Set `MCP_HOST="0.0.0.0"` (or a specific LAN IP) in `install.sh` and reinstall. `mcp_server.py` has **no authentication** — anyone who can reach the port can read and change your match data — so pair this with a firewall rule restricting the source IPs allowed to hit `MCP_PORT`. `install.sh` prints a warning at install time whenever `MCP_HOST` isn't loopback, as a reminder.
 
 Example Claude Desktop / Claude Code config entry (stdio):
 

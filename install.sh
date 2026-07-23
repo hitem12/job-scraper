@@ -19,7 +19,11 @@ LOG_ROTATE_ENABLE=0
 NTFY_SERVER="http://[::1]:2345"  # e.g. "https://ntfy.sh"
 NTFY_TOPIC="jobs"                  # e.g. "job-alerts"
 
-# Port for the always-on MCP service (streamable-http transport)
+# Host/port for the always-on MCP service (streamable-http transport).
+# MCP_HOST defaults to loopback-only. mcp_server.py has no authentication,
+# so if you set this to 0.0.0.0 (or a LAN IP) to reach it from another
+# machine, firewall the port to trusted source IPs yourself.
+MCP_HOST="127.0.0.1"
 MCP_PORT="8766"
 
 # Python deps — keep in sync with pyproject.toml [project.dependencies]
@@ -396,12 +400,17 @@ EOF
 
   # ── 10. MCP OpenRC service ───────────────────────────────────────
   step "Installing OpenRC service → ${MCP_INITD}"
+  if [ "${MCP_HOST}" != "127.0.0.1" ] && [ "${MCP_HOST}" != "::1" ] && [ "${MCP_HOST}" != "localhost" ]; then
+    warn "MCP_HOST=${MCP_HOST} — the MCP service has no authentication."
+    warn "Anyone who can reach ${MCP_HOST}:${MCP_PORT} can read and change your job-match data."
+    warn "Firewall this port to trusted source IPs (e.g. ufw/iptables/nft)."
+  fi
   cat > "${MCP_INITD}" <<EOF
 #!/sbin/openrc-run
 description="job-scraper MCP server"
 
 command="${VENV_DIR}/bin/python"
-command_args="${APP_DIR}/mcp_server.py --transport streamable-http --host 127.0.0.1 --port ${MCP_PORT}"
+command_args="${APP_DIR}/mcp_server.py --transport streamable-http --host ${MCP_HOST} --port ${MCP_PORT}"
 command_user="${APP_USER}:${APP_USER}"
 command_background=true
 pidfile="/run/${MCP_SERVICE}.pid"
@@ -560,7 +569,7 @@ EOF
   printf '\n'
   printf '  Scan now:    %s\n' "${WRAPPER}"
   printf '  Web UI:      http://127.0.0.1:8765  (rc-service %s status)\n' "${WEBUI_SERVICE}"
-  printf '  MCP service: http://127.0.0.1:%s  (rc-service %s status)\n' "${MCP_PORT}" "${MCP_SERVICE}"
+  printf '  MCP service: http://%s:%s  (rc-service %s status)\n' "${MCP_HOST}" "${MCP_PORT}" "${MCP_SERVICE}"
   printf '  MCP on-demand (stdio): %s\n' "${MCP_WRAPPER}"
   printf '  Watch logs:  tail -f %s/cron.log\n' "${LOG_DIR}"
 
@@ -741,6 +750,7 @@ Configuration (edit at the top of this script before running):
   CRON_SCHEDULE   cron time expression                   [${CRON_SCHEDULE}]
   NTFY_TOPIC      ntfy topic for push notifications      [${NTFY_TOPIC:-<unset>}]
   NTFY_SERVER     ntfy server base URL                   [${NTFY_SERVER}]
+  MCP_HOST        bind host for the always-on MCP service  [${MCP_HOST}]
   MCP_PORT        port for the always-on MCP service      [${MCP_PORT}]
   PYTHON_DEPS     pip/uv dependencies (newline-separated) [${_deps_display}]
 
@@ -756,7 +766,7 @@ Key paths:
 After install:
   Scan now:    ${WRAPPER}
   Web UI:      ${WEBUI_WRAPPER}
-  MCP service: rc-service ${MCP_SERVICE} status  (http://127.0.0.1:${MCP_PORT})
+  MCP service: rc-service ${MCP_SERVICE} status  (http://${MCP_HOST}:${MCP_PORT})
   Watch logs:  tail -f ${LOG_DIR}/cron.log
 EOF
 }
